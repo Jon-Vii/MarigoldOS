@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 heapless = "0.8.0"
+miniz_oxide = { version = "0.9.1", default-features = false }

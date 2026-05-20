@@ -1,10 +1,8 @@
 #![no_std]
 #![no_main]
 #![feature(impl_trait_in_assoc_type)]
-// Deny rather than forbid so the ESP app descriptor below (which needs
-// #[no_mangle] + #[link_section]) can opt-out with a localized #[allow].
-// Everything else in this binary stays unsafe-free.
 #![deny(unsafe_code)]
+#![allow(clippy::manual_div_ceil)] // False positive inside esp_hal::dma_buffers!.
 #![deny(clippy::large_stack_arrays)]
 #![deny(clippy::large_types_passed_by_value)]
 
@@ -27,145 +25,205 @@ pub struct EspAppDesc {
     pub reserv2: [u32; 18],
 }
 
-#[allow(unsafe_code)] // ESP-IDF bootloader looks up this symbol by name in this section.
+#[allow(unsafe_code)]
 #[link_section = ".rodata_desc"]
 #[used]
 #[no_mangle]
-pub static _esp_app_desc: EspAppDesc = EspAppDesc {
+pub static _ESP_APP_DESC: EspAppDesc = EspAppDesc {
     magic_word: 0xABCD5432,
     secure_version: 0,
     reserv1: [0; 2],
-    version: *b"0.1.0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    project_name: *b"xteink-x4-os\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+    version: [0; 32],
+    project_name: [0; 32],
     time: *b"00:00:00\0\0\0\0\0\0\0\0",
-    date: *b"2026-05-19\0\0\0\0\0\0",
-    idf_ver: *b"5.5.1\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+    date: *b"2026-05-20\0\0\0\0\0\0",
+    idf_ver: [0; 32],
     app_elf_sha256: [0; 32],
     min_efuse_blk_rev_full: 0,
     max_efuse_blk_rev_full: 65535,
-    mmu_page_size: 16, // 64KB log base 2
-    spi_flash_mode: 2, // DIO
+    mmu_page_size: 16,
+    spi_flash_mode: 2,
     reserv3: [0; 2],
     reserv2: [0; 18],
 };
 
+use display::Rect;
 use embassy_executor::Spawner;
-use esp_hal_embassy::Executor;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
-use esp_hal::analog::adc::{Adc, AdcConfig, Attenuation};
-use esp_hal::gpio::{Io, Input, Output, Level, Pull};
-use esp_hal::entry;
-use esp_hal::timer::timg::TimerGroup;
-use static_cell::StaticCell;
-use esp_hal::prelude::*;
+use esp_hal::analog::adc::{Adc, AdcCalCurve, AdcConfig, Attenuation};
 use esp_hal::dma::{Dma, DmaPriority};
+use esp_hal::entry;
+use esp_hal::gpio::{Input, Io, Level, Output, Pull};
+use esp_hal::peripherals::ADC1;
+use esp_hal::prelude::*;
 use esp_hal::spi::master::Spi;
+use esp_hal::timer::timg::TimerGroup;
+use esp_hal_embassy::Executor;
+use static_cell::StaticCell;
+use tasks::input::InputPins;
 
-// Define workspace modules
+pub mod catalog;
 pub mod tasks;
 
-// Define task communication commands
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum UiCommand {
-    RefreshFull,
-    RefreshPartial { rect: ui::layout::Rect },
-    UpdateProgressBar { percent: u8 },
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Button {
+    Power,
+    Back,
+    Confirm,
+    Previous,
+    Next,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PageRequest {
-    NextPage,
-    PrevPage,
-    GoToChapter { num: u32 },
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputEvent {
+    Sample {
+        button: Option<Button>,
+        aux_raw: u16,
+        nav_raw: u16,
+        page_raw: u16,
+        battery_mv: u16,
+        battery_percent: u8,
+    },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderKind {
+    Boot,
+    Page,
+    Battery,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayOrientation {
+    LandscapeButtonsBottom,
+    LandscapeButtonsTop,
+    PortraitButtonsLeft,
+    PortraitButtonsRight,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppView {
+    Home,
+    Library,
+    Reading,
+    Chapters,
+    Sync,
+    Settings,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefreshPolicy {
+    FastOnly,
+    FullOnWake,
+    FullEveryTen,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderRequest {
+    pub kind: RenderKind,
+    pub view: AppView,
+    pub page: u32,
+    pub chapter: u8,
+    pub selection: u8,
+    pub book_id: u32,
+    pub orientation: DisplayOrientation,
+    pub refresh_policy: RefreshPolicy,
+    pub last_button: Option<Button>,
+    pub aux_raw: u16,
+    pub nav_raw: u16,
+    pub page_raw: u16,
+    pub battery_mv: u16,
+    pub battery_percent: u8,
+    pub dirty: Rect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayCommand {
+    Render(RenderRequest),
+    Sleep,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayEvent {
+    Settled,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PowerEvent {
-    PageRendered,
-    WifiSyncRequired,
-    GoToSleep,
-    WakeUp,
+    Activity,
+    DisplaySettled,
+    DisplayAsleep,
+    SleepNow,
 }
 
-// Bounded compile-time channels as defined in ARCHITECTURE.md Section 4
-pub static UI_CMD: Channel<CriticalSectionRawMutex, UiCommand, 4> = Channel::new();
-pub static PAGE_REQ: Channel<CriticalSectionRawMutex, PageRequest, 2> = Channel::new();
-pub static POWER_EVT: Channel<CriticalSectionRawMutex, PowerEvent, 4> = Channel::new();
+pub static INPUT_EVENTS: Channel<CriticalSectionRawMutex, InputEvent, 8> = Channel::new();
+pub static DISPLAY_COMMANDS: Channel<CriticalSectionRawMutex, DisplayCommand, 1> = Channel::new();
+pub static DISPLAY_EVENTS: Channel<CriticalSectionRawMutex, DisplayEvent, 4> = Channel::new();
+pub static POWER_EVENTS: Channel<CriticalSectionRawMutex, PowerEvent, 4> = Channel::new();
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     esp_println::println!("{}", info);
-    loop {
-        // Safe lockup on panic
-    }
+    loop {}
 }
 
 static EXECUTOR: StaticCell<Executor> = StaticCell::new();
 
 #[entry]
 fn main() -> ! {
-    // 1. Initialize ESP32-C3 hardware clocks & registers
     let peripherals = esp_hal::init(esp_hal::Config::default());
+    esp_println::println!("xteink-x4-os: boot");
 
-    esp_println::println!("--- Xteink X4 OS Booting ---");
+    let timers = TimerGroup::new(peripherals.TIMG0);
+    esp_hal_embassy::init(timers.timer0);
 
-    // Initialize Embassy time driver
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_hal_embassy::init(timg0.timer0);
-
-    esp_println::println!("Embassy executor initialized successfully!");
-
-    // 2. Set up GPIO pins via esp-hal Io
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-    let cs = Output::new(io.pins.gpio21, Level::High);
-    let dc = Output::new(io.pins.gpio4, Level::Low);
-    let rst = Output::new(io.pins.gpio5, Level::High);
-    let busy = Input::new(io.pins.gpio6, Pull::None);
-    let home_button = Input::new(io.pins.gpio3, Pull::Up);
+    let epd_cs = Output::new(io.pins.gpio21, Level::High);
+    let epd_dc = Output::new(io.pins.gpio4, Level::High);
+    let epd_rst = Output::new(io.pins.gpio5, Level::High);
+    let epd_busy = Input::new(io.pins.gpio6, Pull::None);
+    let sd_cs = Output::new(io.pins.gpio12, Level::High);
+    let power_button = Input::new(io.pins.gpio3, Pull::Up);
 
-    // ADC1 + GPIO1/GPIO2 ladders for nav buttons (papyrix X4 device-spec).
-    // 11 dB attenuation gives full 0..~3.3 V range across the resistor ladder.
-    let mut adc_cfg = AdcConfig::new();
-    let nav_pin = adc_cfg.enable_pin(io.pins.gpio1, Attenuation::Attenuation11dB);
-    let page_pin = adc_cfg.enable_pin(io.pins.gpio2, Attenuation::Attenuation11dB);
-    let adc1 = Adc::new(peripherals.ADC1, adc_cfg);
+    let mut adc_config = AdcConfig::new();
+    let aux_adc = adc_config
+        .enable_pin_with_cal::<_, AdcCalCurve<ADC1>>(io.pins.gpio0, Attenuation::Attenuation11dB);
+    let nav_adc = adc_config
+        .enable_pin_with_cal::<_, AdcCalCurve<ADC1>>(io.pins.gpio1, Attenuation::Attenuation11dB);
+    let page_adc = adc_config
+        .enable_pin_with_cal::<_, AdcCalCurve<ADC1>>(io.pins.gpio2, Attenuation::Attenuation11dB);
+    let adc1 = Adc::new(peripherals.ADC1, adc_config);
 
-    esp_println::println!("Hardware IO, EPD control pins, and ADC1 configured.");
-
-    // 3. Configure DMA and SPI for EPD
     let dma = Dma::new(peripherals.DMA);
-    let dma_channel = dma.channel0.configure_for_async(
-        false,
-        DmaPriority::Priority0,
-    );
-
+    let dma_channel = dma
+        .channel0
+        .configure_for_async(false, DmaPriority::Priority0);
     let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = esp_hal::dma_buffers!(8000);
-    let dma_rx_buf = esp_hal::dma::DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
-    let dma_tx_buf = esp_hal::dma::DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
+    let dma_rx = esp_hal::dma::DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
+    let dma_tx = esp_hal::dma::DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
+    let epd_spi = Spi::new(peripherals.SPI2, 40_u32.MHz(), esp_hal::spi::SpiMode::Mode0)
+        .with_sck(io.pins.gpio8)
+        .with_mosi(io.pins.gpio10)
+        .with_miso(io.pins.gpio7)
+        .with_dma(dma_channel)
+        .with_buffers(dma_rx, dma_tx);
+    let epd_bus = hal_ext::spi_dma::EpdBus::new(epd_spi, epd_cs, epd_dc, epd_busy, epd_rst);
 
-    // 40 MHz EPD SPI clock per papyrix X4 docs. SSD1677 tolerates this and it
-    // cuts the 48 KB framebuffer wire time from ~38 ms to ~10 ms, leaving more
-    // headroom for partial-update overlays.
-    let spi = Spi::new(
-        peripherals.SPI2,
-        40_u32.MHz(),
-        esp_hal::spi::SpiMode::Mode0,
-    )
-    .with_sck(io.pins.gpio8)
-    .with_mosi(io.pins.gpio10)
-    .with_dma(dma_channel)
-    .with_buffers(dma_rx_buf, dma_tx_buf);
-
-    let epd_spi = hal_ext::spi_dma::EpdSpi::new(spi, cs, dc, busy, rst);
-
-    // 4. Spawn tasks in parallel under Embassy
     let executor = EXECUTOR.init(Executor::new());
-    esp_println::println!("Spawning system tasks...");
     executor.run(|spawner: Spawner| {
-        spawner.spawn(tasks::display::run(epd_spi)).unwrap();
+        spawner.spawn(tasks::app::run()).unwrap();
+        spawner.spawn(tasks::display::run(epd_bus, sd_cs)).unwrap();
         spawner
-            .spawn(tasks::input::run(home_button, adc1, nav_pin, page_pin))
+            .spawn(tasks::input::run(
+                adc1,
+                InputPins {
+                    power: power_button,
+                    aux_pin: aux_adc,
+                    nav_pin: nav_adc,
+                    page_pin: page_adc,
+                },
+            ))
             .unwrap();
         spawner.spawn(tasks::power::run(peripherals.LPWR)).unwrap();
         spawner.spawn(tasks::wifi::run(peripherals.WIFI)).unwrap();

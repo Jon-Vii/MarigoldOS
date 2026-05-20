@@ -2,4 +2,3 @@
 #![forbid(unsafe_code)]
 
 pub mod layout;
-pub mod font;
