@@ -32,7 +32,7 @@ Current code status:
 | Deep sleep | Timer wake + display-sleep handshake present, GPIO wake pending |
 | Partial refresh | Deferred; full-screen fast refresh present |
 | NVM progress | Deferred |
-| Storage / EPUB / Wi-Fi | EPUB stream reader, FAT scan, `/books` then card-root discovery, and selected-book preview loading present; Wi-Fi still pending |
+| Storage / EPUB / Wi-Fi | EPUB stream reader, FAT scan, `/books` then card-root discovery, and SD-backed hybrid-light section cache present; Wi-Fi still pending |
 | Typography | Literata Latin-1 bitmap assets generated; Reading uses Literata for demo text |
 
 ## Phase 2: measured board support
@@ -81,6 +81,19 @@ Current code status:
 - Firmware Files/Home/Reading now consume the shared catalog/cache model through
   the refactored `ReaderStore`. The current in-flash demo book remains a
   fallback source while SD EPUB loading is hardened.
+- The selected-book preview path has been replaced by `build_or_load_book_cache`.
+  First open writes `/XTEINK/CACHE/E<hash>/BOOK.BIN`, builds the requested
+  section into `/XTEINK/CACHE/E<hash>/SECTIONS/SNNN.BIN`, and renders from those
+  flat records. Near-end NEXT requests a larger cached page target before
+  rendering, so partial section caches can extend on demand.
+- `BOOK.BIN` stores book/spine/TOC records plus a shared string blob. Section
+  files store a section header, page records, block records, paragraph flags,
+  and UTF-8 text bytes. Line/word cache records remain defined in `proto::cache`
+  for the next rendering refinement; the current firmware renderer still draws
+  styled block text with Literata.
+- `/XTEINK/STATE.BIN` writes the encoded `AppStateRecord` for SD reading
+  progress. Boot-time restore is still pending the app/display handoff that maps
+  the saved book id/path back onto the scanned SD catalog.
 - X4 SD pins are configured on the shared SPI bus: SCK GPIO8, MOSI GPIO10, MISO
   GPIO7, SD CS GPIO12. `embedded-sdmmc` is present with default features
   disabled.
@@ -95,8 +108,9 @@ Current code status:
 - `display::font` renders generated bitmap glyphs directly into the framebuffer.
 - Reading mode uses Literata for the current demo text; tiny 5x7 remains for
   debug/status chrome.
-- `tools/preview` exports PBM snapshots for Home, Files, Reading, Chapters, and
-  Settings into `target/previews`.
+- `tools/preview` exports PBM/PNG snapshots for Home, Files, Reading, Chapters,
+  and Settings into `target/previews`. It can also render EPUB parser previews
+  from host-side files for layout inspection before flashing.
 
 ## Phase 5: Wi-Fi sync
 

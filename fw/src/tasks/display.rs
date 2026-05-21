@@ -9,9 +9,13 @@ use display::epd::RefreshMode;
 use display::fb::Framebuffer;
 use display::BAND_BYTES;
 use esp_hal::gpio::Output;
+use hal_ext::nvm::AppStateRecord;
 
 const FAST_REFRESH_ENABLED: bool = true;
 const FULL_REFRESH_INTERVAL: u8 = 8;
+const INITIAL_SECTION_PAGES: usize = 5;
+const SECTION_EXTEND_PAGES: usize = 5;
+const SECTION_EXTEND_THRESHOLD: u32 = 2;
 
 #[embassy_executor::task]
 pub async fn run(mut epd: Epd, mut sd_cs: Output<'static>) {
@@ -53,20 +57,32 @@ pub async fn run(mut epd: Epd, mut sd_cs: Output<'static>) {
                 if request.view == AppView::Reading && request.book_id >= 2 {
                     let index = request.book_id.saturating_sub(2) as usize;
                     let requested_chapter = request.chapter;
-                    if sd_library.loaded_index != Some(index)
-                        || sd_library.loaded_chapter != requested_chapter
-                    {
-                        reader_cache::load_book_preview(
+                    let needs_initial_load = sd_library.loaded_index != Some(index)
+                        || sd_library.loaded_chapter != requested_chapter;
+                    let needs_extension =
+                        !needs_initial_load && should_extend_section(request.page, &sd_library);
+                    if needs_initial_load || needs_extension {
+                        let target_pages = if needs_extension {
+                            request
+                                .page
+                                .saturating_add(SECTION_EXTEND_PAGES as u32)
+                                .max(sd_library.page_count as u32 + SECTION_EXTEND_PAGES as u32)
+                                as usize
+                        } else {
+                            INITIAL_SECTION_PAGES
+                        };
+                        reader_cache::build_or_load_book_cache(
                             &mut epd,
                             &mut sd_cs,
                             &mut sd_library,
                             index,
                             requested_chapter,
+                            target_pages,
                             epub_scratch,
                         );
                         let _ = LIBRARY_EVENTS.try_send(LibraryEvent::Loaded {
                             book_id: request.book_id,
-                            pages: sd_library.page_count.max(1) as u32,
+                            pages: advertised_page_count(&sd_library),
                             chapters: sd_library.chapter_count_for_ui(),
                         });
                         crate::reader_store::publish_chapter_pages(request.book_id, &sd_library);
@@ -74,6 +90,20 @@ pub async fn run(mut epd: Epd, mut sd_cs: Output<'static>) {
                     }
                 }
                 crate::views::render(fb, request, &sd_library);
+                if request.view == AppView::Reading && request.book_id >= 2 {
+                    reader_cache::store_app_state(
+                        &mut epd,
+                        &mut sd_cs,
+                        AppStateRecord {
+                            book_id: request.book_id,
+                            chapter: request.chapter as u16,
+                            screen: request.page,
+                            shell_orientation: crate::DisplayOrientation::PortraitButtonsLeft as u8,
+                            reading_orientation: request.orientation as u8,
+                            refresh_policy: request.refresh_policy as u8,
+                        },
+                    );
+                }
 
                 let mode = refresh_mode(screen_on, fast_refreshes, request.refresh_policy);
                 if content_context_changed {
@@ -115,6 +145,21 @@ pub async fn run(mut epd: Epd, mut sd_cs: Output<'static>) {
                 }
             }
         }
+    }
+}
+
+fn should_extend_section(requested_page: u32, library: &ReaderStore) -> bool {
+    library.section_partial
+        && library.page_count > 0
+        && requested_page.saturating_add(SECTION_EXTEND_THRESHOLD) >= library.page_count as u32
+}
+
+fn advertised_page_count(library: &ReaderStore) -> u32 {
+    let cached = library.page_count.max(1) as u32;
+    if library.section_partial {
+        cached.saturating_add(1)
+    } else {
+        cached
     }
 }
 

@@ -126,11 +126,12 @@ Framebuffer       single flat byte array
 EPUB work keeps the same shape:
 
 ```text
-flash bytes -> zip entry -> inflate window -> XML token -> line box -> glyph blit
+SD file -> ZIP entry -> inflate window -> XML token -> flat cache record -> glyph blit
 ```
 
-No DOM, no `Vec<Node>`, no retained chapter tree unless measurements prove it is
-worth the memory.
+No DOM, no heap object graph, and no entire-book-in-RAM reader model. Parsers
+are allowed to be state machines, but their output is immediately flattened into
+bounded records.
 
 `proto` owns the reader data contracts shared by Home, Files, Reading, Chapters,
 and the host preview tool:
@@ -155,6 +156,33 @@ configured on the shared SPI bus (SCK GPIO8, MOSI GPIO10, MISO GPIO7, SD CS
 GPIO12). SD transactions and display refreshes remain serialized by that single
 board-I/O owner.
 
+## SD-backed reader cache
+
+The SD reader uses a hybrid-light cache. Opening an EPUB parses OPF/TOC/spine,
+writes a flat book index, and builds the first chunk of the requested section.
+When the user nears the cached end, the display task requests a larger target
+page count and the section cache is rebuilt/extended before rendering the next
+page. Chapter jumps build the requested chapter section on demand.
+
+Cache paths use FAT 8.3-safe names because `embedded-sdmmc` operates on short
+file names in the firmware path:
+
+```text
+/XTEINK/CACHE/E<hash>/BOOK.BIN
+/XTEINK/CACHE/E<hash>/SECTIONS/S000.BIN
+/XTEINK/CACHE/E<hash>/SECTIONS/S001.BIN
+/XTEINK/STATE.BIN
+```
+
+`BOOK.BIN` contains a `BookCacheHeader`, spine records, TOC records, and a shared
+string blob for title, author, source path, hrefs, and TOC titles. Section files
+contain a `SectionHeader`, page records, block records, paragraph flags, and the
+UTF-8 text blob for the cached rendered page chunk. The active firmware state
+keeps only loaded book metadata, active section page records, block records,
+text bytes, and small ZIP/XML scratch buffers. `STATE.BIN` stores the encoded
+`AppStateRecord`; writing is present, while boot-time restore still needs the
+app/display handoff that maps the saved book id back to the scanned SD catalog.
+
 Reading typography uses generated Literata bitmap assets. The host generator
 downloads OFL Literata TTFs and emits Latin-1 glyph metrics/bitmaps for Regular,
 Italic, Bold, and BoldItalic. Firmware does not rasterize TTFs on-device.
@@ -178,12 +206,10 @@ Reading mode keeps the page quiet: tiny book title, rendered-screen count within
 the chapter, symbolic battery, and a thin whole-book progress bar. Home shows a
 small battery percentage because it is a status surface. GPIO0 is sampled as the
 current rough battery source using a 2:1 divider assumption and a simple
-3300-4200 mV LiPo percentage curve. The current book is a built-in catalog entry
-backed by static text pages. Real EPUB support now has parser/storage contracts
-in `proto`; the current firmware path scans the card and opens a selected EPUB
-into the same current book id, chapter index, and screen offset fields. The next
-cleanup step is to move the SD catalog/cache owner out of the display renderer
-without letting display refresh and SD reads overlap.
+3300-4200 mV LiPo percentage curve. The current book may be the built-in
+fallback or a microSD EPUB. SD EPUBs use the same flat book/chapter/page fields
+as built-in content, but page bodies come from the SD-backed cache instead of
+static text arrays.
 
 ## Current module map
 
