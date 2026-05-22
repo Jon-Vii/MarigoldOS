@@ -1,22 +1,19 @@
 use crate::display_flush::{self, Epd};
 use crate::reader_cache::{self, ReaderCacheScratch};
-use crate::reader_store::{LibraryScanStatus, ReaderStore};
+use crate::reader_store::{BookLoadStatus, ReaderStore};
 use crate::{
-    AppView, DisplayCommand, DisplayEvent, LibraryEvent, PowerEvent, RefreshPolicy,
-    DISPLAY_COMMANDS, DISPLAY_EVENTS, LIBRARY_EVENTS, POWER_EVENTS,
+    AppView, DisplayCommand, DisplayEvent, LibraryEvent, PowerEvent, RefreshPolicy, StorageCommand,
+    DISPLAY_COMMANDS, DISPLAY_EVENTS, LIBRARY_EVENTS, POWER_EVENTS, STORAGE_COMMANDS,
 };
 use display::epd::RefreshMode;
 use display::fb::Framebuffer;
 use display::BAND_BYTES;
+use embassy_futures::select::{select, Either};
 use esp_hal::gpio::Output;
 use hal_ext::nvm::AppStateRecord;
 
 const FAST_REFRESH_ENABLED: bool = true;
 const FULL_REFRESH_INTERVAL: u8 = 8;
-const INITIAL_SECTION_PAGES: usize = 5;
-const SECTION_EXTEND_PAGES: usize = 5;
-const SECTION_EXTEND_THRESHOLD: u32 = 2;
-
 #[embassy_executor::task]
 pub async fn run(mut epd: Epd, mut sd_cs: Output<'static>) {
     esp_println::println!("display: started");
@@ -42,79 +39,11 @@ pub async fn run(mut epd: Epd, mut sd_cs: Output<'static>) {
     let mut last_book_id: Option<u32> = None;
     let mut last_request: Option<crate::RenderRequest> = None;
     loop {
-        match DISPLAY_COMMANDS.receive().await {
-            DisplayCommand::Render(request) => {
-                let mut content_context_changed =
+        match select(DISPLAY_COMMANDS.receive(), STORAGE_COMMANDS.receive()).await {
+            Either::First(DisplayCommand::Render(request)) => {
+                let content_context_changed =
                     last_view != Some(request.view) || last_book_id != Some(request.book_id);
-                let defer_library_scan = request.view == AppView::Library
-                    && sd_library.status == LibraryScanStatus::NotScanned;
-                if defer_library_scan {
-                    sd_library.status = LibraryScanStatus::Scanning;
-                }
-                if request.view == AppView::Library
-                    && sd_library.status == LibraryScanStatus::Scanning
-                    && !defer_library_scan
-                {
-                    crate::library_sd::scan_books(&mut epd, &mut sd_cs, &mut sd_library);
-                    let _ = LIBRARY_EVENTS.try_send(LibraryEvent::Scanned {
-                        count: sd_library.count.min(u8::MAX as usize) as u8,
-                    });
-                }
-                if request.view == AppView::Reading && request.book_id >= 2 {
-                    let index = request.book_id.saturating_sub(2) as usize;
-                    let requested_chapter = request.chapter;
-                    let needs_initial_load = sd_library.loaded_index != Some(index)
-                        || sd_library.loaded_chapter != requested_chapter;
-                    let needs_extension =
-                        !needs_initial_load && should_extend_section(request.page, &sd_library);
-                    if needs_initial_load || needs_extension {
-                        let target_pages = if needs_extension {
-                            request
-                                .page
-                                .saturating_add(SECTION_EXTEND_PAGES as u32)
-                                .max(sd_library.page_count as u32 + SECTION_EXTEND_PAGES as u32)
-                                as usize
-                        } else {
-                            INITIAL_SECTION_PAGES
-                        };
-                        let scratch = epub_scratch
-                            .get_or_insert_with(|| EPUB_SCRATCH.init(ReaderCacheScratch::new()));
-                        reader_cache::build_or_load_book_cache(
-                            &mut epd,
-                            &mut sd_cs,
-                            &mut sd_library,
-                            index,
-                            requested_chapter,
-                            target_pages,
-                            scratch,
-                        );
-                        let _ = LIBRARY_EVENTS.try_send(LibraryEvent::Loaded {
-                            book_id: request.book_id,
-                            pages: advertised_page_count(&sd_library),
-                            chapters: sd_library.chapter_count_for_ui(),
-                        });
-                        crate::reader_store::publish_chapter_pages(request.book_id, &sd_library);
-                        content_context_changed = true;
-                    }
-                }
                 crate::views::render(fb, request, &sd_library);
-                if request.view == AppView::Reading && request.book_id >= 2 {
-                    let (source_hash, source_size) = source_identity(&sd_library, request.book_id);
-                    reader_cache::store_app_state(
-                        &mut epd,
-                        &mut sd_cs,
-                        AppStateRecord {
-                            book_id: request.book_id,
-                            chapter: request.chapter as u16,
-                            screen: request.page,
-                            shell_orientation: crate::DisplayOrientation::PortraitButtonsLeft as u8,
-                            reading_orientation: request.orientation as u8,
-                            refresh_policy: request.refresh_policy as u8,
-                            source_hash,
-                            source_size,
-                        },
-                    );
-                }
 
                 if !screen_on && last_request.is_none() {
                     esp_println::println!("display: wake init start");
@@ -153,11 +82,8 @@ pub async fn run(mut epd: Epd, mut sd_cs: Output<'static>) {
                     esp_println::println!("display: SPI transfer failed");
                 }
                 last_request = Some(request);
-                if defer_library_scan {
-                    let _ = DISPLAY_COMMANDS.try_send(DisplayCommand::Render(request));
-                }
             }
-            DisplayCommand::Sleep => {
+            Either::First(DisplayCommand::Sleep) => {
                 if let Some(request) = last_request {
                     crate::views::render_sleep(fb, request, &sd_library);
                     let _ = display_flush::flush(
@@ -177,20 +103,98 @@ pub async fn run(mut epd: Epd, mut sd_cs: Output<'static>) {
                     last_view = None;
                     last_book_id = None;
                     last_request = None;
+                    let _ = DISPLAY_EVENTS.try_send(DisplayEvent::Asleep);
                     let _ = POWER_EVENTS.send(PowerEvent::DisplayAsleep).await;
                 } else {
                     esp_println::println!("display: sleep command failed");
+                    let _ = DISPLAY_EVENTS.try_send(DisplayEvent::Asleep);
                     let _ = POWER_EVENTS.send(PowerEvent::DisplayAsleep).await;
                 }
+            }
+            Either::Second(command) => {
+                handle_storage_command(
+                    command,
+                    &mut epd,
+                    &mut sd_cs,
+                    &mut sd_library,
+                    &mut epub_scratch,
+                    || EPUB_SCRATCH.init(ReaderCacheScratch::new()),
+                );
             }
         }
     }
 }
 
-fn should_extend_section(requested_page: u32, library: &ReaderStore) -> bool {
-    library.section_partial
-        && library.page_count > 0
-        && requested_page.saturating_add(SECTION_EXTEND_THRESHOLD) >= library.page_count as u32
+fn handle_storage_command(
+    command: StorageCommand,
+    epd: &mut Epd,
+    sd_cs: &mut Output<'static>,
+    sd_library: &mut ReaderStore,
+    epub_scratch: &mut Option<&'static mut ReaderCacheScratch>,
+    init_scratch: impl FnOnce() -> &'static mut ReaderCacheScratch,
+) {
+    match command {
+        StorageCommand::RefreshCatalog => {
+            if sd_library.count == 0
+                && crate::library_sd::load_catalog_cache(epd, sd_cs, sd_library)
+            {
+                let _ = LIBRARY_EVENTS.try_send(LibraryEvent::Scanned {
+                    count: sd_library.count.min(u8::MAX as usize) as u8,
+                });
+            }
+            crate::library_sd::scan_books(epd, sd_cs, sd_library);
+            let _ = LIBRARY_EVENTS.try_send(LibraryEvent::Scanned {
+                count: sd_library.count.min(u8::MAX as usize) as u8,
+            });
+        }
+        StorageCommand::OpenBook {
+            book_id,
+            index,
+            chapter,
+            target_pages,
+        }
+        | StorageCommand::ExtendSection {
+            book_id,
+            index,
+            chapter,
+            target_pages,
+        } => {
+            sd_library.reader_status = BookLoadStatus::Loading;
+            let scratch = epub_scratch.get_or_insert_with(init_scratch);
+            reader_cache::build_or_load_book_cache(
+                epd,
+                sd_cs,
+                sd_library,
+                index as usize,
+                chapter,
+                target_pages as usize,
+                scratch,
+            );
+            let _ = LIBRARY_EVENTS.try_send(LibraryEvent::Loaded {
+                book_id,
+                pages: advertised_page_count(sd_library),
+                chapters: sd_library.chapter_count_for_ui(),
+            });
+            crate::reader_store::publish_chapter_pages(book_id, sd_library);
+        }
+        StorageCommand::StoreProgress(record) => {
+            let (source_hash, source_size) = source_identity(sd_library, record.book_id);
+            reader_cache::store_app_state(
+                epd,
+                sd_cs,
+                AppStateRecord {
+                    book_id: record.book_id,
+                    chapter: record.chapter,
+                    screen: record.screen,
+                    shell_orientation: record.shell_orientation,
+                    reading_orientation: record.reading_orientation,
+                    refresh_policy: record.refresh_policy,
+                    source_hash,
+                    source_size,
+                },
+            );
+        }
+    }
 }
 
 fn advertised_page_count(library: &ReaderStore) -> u32 {

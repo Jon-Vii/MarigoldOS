@@ -187,7 +187,7 @@ pub struct Emulator {
     screen_on: bool,
     fast_refreshes: u8,
     sleeping: bool,
-    sd_root: Option<PathBuf>,
+    _sd_root: Option<PathBuf>,
     library_entries: Vec<String>,
     last_view: Option<app_core::AppView>,
     last_book_id: Option<u32>,
@@ -203,7 +203,7 @@ impl Emulator {
             screen_on: false,
             fast_refreshes: 0,
             sleeping: false,
-            sd_root,
+            _sd_root: sd_root,
             library_entries: Vec::new(),
             last_view: None,
             last_book_id: None,
@@ -230,7 +230,6 @@ impl Emulator {
             return;
         }
         self.state = self.state.apply_input(self.ctx, InputEvent::button(button));
-        self.maybe_autoscan();
         self.render(app_core::RenderKind::Page);
     }
 
@@ -253,44 +252,6 @@ impl Emulator {
 
     pub fn framebuffer(&self) -> &display::fb::Framebuffer {
         &self.fb
-    }
-
-    fn maybe_autoscan(&mut self) {
-        if self.state.view != app_core::AppView::Library || self.state.library_count != 0 {
-            return;
-        }
-        let count = self.scan_sd_root();
-        self.state = self
-            .state
-            .apply_library_event(self.ctx, LibraryEvent::Scanned { count });
-    }
-
-    fn scan_sd_root(&mut self) -> u8 {
-        self.library_entries.clear();
-        let Some(root) = &self.sd_root else {
-            return 0;
-        };
-        for dir in [root.join("books"), root.clone()] {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("epub"))
-                {
-                    if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-                        self.library_entries.push(name.to_owned());
-                    }
-                }
-                if self.library_entries.len() >= 8 {
-                    break;
-                }
-            }
-        }
-        self.library_entries.len().min(u8::MAX as usize) as u8
     }
 
     fn render(&mut self, kind: app_core::RenderKind) {

@@ -151,7 +151,7 @@ impl ReaderStore {
         }
     }
 
-    pub(crate) fn clear(&mut self) {
+    pub(crate) fn clear_catalog(&mut self) {
         self.count = 0;
         for entry in self.entries.iter_mut() {
             entry.display_name.clear();
@@ -161,18 +161,6 @@ impl ReaderStore {
             entry.source_hash = 0;
         }
         self.current_index = None;
-        self.loaded_index = None;
-        self.loaded_chapter = 0;
-        self.reader_status = BookLoadStatus::Empty;
-        self.title.clear();
-        self.author.clear();
-        self.error.clear();
-        self.cache_key.clear();
-        self.clear_cover();
-        self.cached_spine = 0;
-        self.section_partial = false;
-        self.clear_toc();
-        self.clear_lines();
     }
 
     pub(crate) fn clear_toc(&mut self) {

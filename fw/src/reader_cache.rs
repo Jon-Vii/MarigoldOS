@@ -158,6 +158,7 @@ pub(crate) fn build_or_load_book_cache(
             delay: esp_hal::delay::Delay::new(),
         };
         let card = SdCard::new(spi, esp_hal::delay::Delay::new());
+        esp_println::println!("epub: card init begin");
         if let Err(err) = card.num_bytes() {
             esp_println::println!("epub: card init failed: {:?}", err);
             set_preview_error(library, "CARD INIT");
@@ -165,6 +166,7 @@ pub(crate) fn build_or_load_book_cache(
         }
         card.spi(|device| device.spi.change_bus_frequency(8_u32.MHz()));
 
+        esp_println::println!("epub: open volume");
         let volume_mgr: VolumeManager<_, _, 4, 4, 1> = VolumeManager::new(card, StaticTime);
         let volume = match volume_mgr.open_volume(VolumeIdx(0)) {
             Ok(volume) => volume,
@@ -174,6 +176,7 @@ pub(crate) fn build_or_load_book_cache(
                 break 'open BookLoadStatus::Error;
             }
         };
+        esp_println::println!("epub: open root");
         let root = match volume.open_root_dir() {
             Ok(root) => root,
             Err(err) => {

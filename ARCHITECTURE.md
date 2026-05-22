@@ -41,9 +41,10 @@ app_task
   InputEvent -> DisplayCommand::Render
   modes: Library, Reading, Chapters, Settings
 
-display_task
-  owns EpdBus and Framebuffer
-  DisplayCommand::Render -> framebuffer render -> BW/RED RAM write -> full refresh
+board_io/display task
+  owns EpdBus, SD CS, ReaderStore, and Framebuffer
+  DisplayCommand::Render -> pure framebuffer render from the current ReaderStore snapshot
+  StorageCommand::* -> serialized SD/FAT/catalog/cache work on the shared SPI bus
   DisplayCommand::Sleep -> sleep screen full refresh -> SSD1677 deep sleep -> PowerEvent::DisplayAsleep
   sends DisplayEvent::Settled to app_task when render completes
 
@@ -71,6 +72,12 @@ display render in flight. While the display is refreshing, new button events
 still update `ReaderState`, but they set a single pending-render flag instead of
 queuing stale framebuffer renders. When `DisplayEvent::Settled` arrives, the app
 renders the latest state once.
+
+Storage is also explicit. Files/Home/Reading transitions enqueue
+`StorageCommand`s after the visible render settles; render commands never scan
+FAT, open EPUBs, build caches, or write progress. The board I/O task is still
+the single SPI owner, so display refresh and SD transactions cannot overlap, but
+the user-facing view is always drawn from the latest already-owned snapshot.
 
 ## Display model
 
@@ -163,7 +170,7 @@ and the host preview tool:
   cache records used by firmware and preview pagination.
 
 The firmware still ships one built-in catalog entry as a fallback, but the
-display task now also owns the shared SPI bus while it scans FAT16/FAT32
+board I/O task owns the shared SPI bus while it scans FAT16/FAT32
 microSD cards for EPUBs under `/books` and then the card root. X4 SD pins are
 configured on the shared SPI bus (SCK GPIO8, MOSI GPIO10, MISO GPIO7, SD CS
 GPIO12). SD transactions and display refreshes remain serialized by that single
@@ -173,12 +180,17 @@ board-I/O owner.
 
 The SD reader uses a hybrid-light cache. Opening an EPUB parses OPF/TOC/spine,
 writes a flat book index, and builds the first chunk of the requested section.
-When the user nears the cached end, the display task requests a larger target
+When the user nears the cached end, the app requests a larger target
 page count and the section cache is rebuilt/extended before rendering the next
 page. Chapter jumps build the requested chapter section on demand.
 
 Cache paths use FAT 8.3-safe names because `embedded-sdmmc` operates on short
-file names in the firmware path:
+file names in the firmware path. The library list is a separate flat catalog
+snapshot at `/XTEINK/CATALOG.BIN`. On boot/refresh, firmware first tries to load
+this cached snapshot, then refreshes `/BOOKS` and card-root discovery in a
+storage command. Files renders the current snapshot immediately. It may show
+“Library unavailable” before any successful cache/scan, and “No books found”
+only after a completed scan proves the card has no EPUBs.
 
 ```text
 /XTEINK/CACHE/E<hash>/BOOK.BIN

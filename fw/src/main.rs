@@ -49,7 +49,7 @@ pub static _ESP_APP_DESC: EspAppDesc = EspAppDesc {
 
 pub use app_core::{
     AppView, Button, DisplayCommand, DisplayEvent, DisplayOrientation, InputEvent, LibraryEvent,
-    PowerEvent, RefreshPolicy, RenderKind, RenderRequest,
+    PowerEvent, RefreshPolicy, RenderKind, RenderRequest, StorageCommand,
 };
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -79,6 +79,7 @@ pub static INPUT_EVENTS: Channel<CriticalSectionRawMutex, InputEvent, 8> = Chann
 pub static DISPLAY_COMMANDS: Channel<CriticalSectionRawMutex, DisplayCommand, 1> = Channel::new();
 pub static DISPLAY_EVENTS: Channel<CriticalSectionRawMutex, DisplayEvent, 4> = Channel::new();
 pub static LIBRARY_EVENTS: Channel<CriticalSectionRawMutex, LibraryEvent, 64> = Channel::new();
+pub static STORAGE_COMMANDS: Channel<CriticalSectionRawMutex, StorageCommand, 4> = Channel::new();
 pub static POWER_EVENTS: Channel<CriticalSectionRawMutex, PowerEvent, 4> = Channel::new();
 
 #[panic_handler]

@@ -3,12 +3,21 @@ use crate::reader_store::{LibraryScanStatus, ReaderStore};
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
 use embedded_hal::spi::{Operation, SpiBus as BlockingSpiBus, SpiDevice};
-use embedded_sdmmc::{LfnBuffer, SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager};
+use embedded_sdmmc::{
+    Directory, File, LfnBuffer, Mode, SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager,
+};
 use esp_hal::gpio::Output;
 use esp_hal::prelude::*;
 use heapless::String;
 
 pub(crate) struct StaticTime;
+
+const CATALOG_ROOT_DIR: &str = "XTEINK";
+const CATALOG_FILE: &str = "CATALOG.BIN";
+const CATALOG_MAGIC: &[u8; 4] = b"X4CT";
+const CATALOG_VERSION: u8 = 1;
+const CATALOG_HEADER_BYTES: usize = 8;
+const CATALOG_RECORD_BYTES: usize = 92;
 
 impl TimeSource for StaticTime {
     fn get_timestamp(&self) -> Timestamp {
@@ -70,7 +79,7 @@ where
 
 pub(crate) fn scan_books(epd: &mut Epd, sd_cs: &mut Output<'static>, library: &mut ReaderStore) {
     esp_println::println!("sd: scan start");
-    library.clear();
+    library.status = LibraryScanStatus::Scanning;
     epd.deselect_display();
     sd_cs.set_high();
     epd.spi_mut().change_bus_frequency(400_u32.kHz());
@@ -90,6 +99,7 @@ pub(crate) fn scan_books(epd: &mut Epd, sd_cs: &mut Output<'static>, library: &m
             delay: esp_hal::delay::Delay::new(),
         };
         let card = SdCard::new(spi, esp_hal::delay::Delay::new());
+        esp_println::println!("sd: card init begin");
         match card.num_bytes() {
             Ok(bytes) => esp_println::println!("sd: card size {} bytes", bytes),
             Err(err) => {
@@ -99,6 +109,7 @@ pub(crate) fn scan_books(epd: &mut Epd, sd_cs: &mut Output<'static>, library: &m
         }
 
         card.spi(|device| device.spi.change_bus_frequency(8_u32.MHz()));
+        esp_println::println!("sd: open volume");
         let volume_mgr: VolumeManager<_, _, 4, 4, 1> = VolumeManager::new(card, StaticTime);
         let volume = match volume_mgr.open_volume(VolumeIdx(0)) {
             Ok(volume) => volume,
@@ -107,6 +118,7 @@ pub(crate) fn scan_books(epd: &mut Epd, sd_cs: &mut Output<'static>, library: &m
                 break 'scan LibraryScanStatus::Error;
             }
         };
+        esp_println::println!("sd: open root");
         let root = match volume.open_root_dir() {
             Ok(root) => root,
             Err(err) => {
@@ -115,6 +127,8 @@ pub(crate) fn scan_books(epd: &mut Epd, sd_cs: &mut Output<'static>, library: &m
             }
         };
 
+        library.clear_catalog();
+        library.status = LibraryScanStatus::Scanning;
         if let Ok(books) = root.open_dir("BOOKS") {
             collect_epubs(&books, "/books/", true, library);
         }
@@ -125,12 +139,205 @@ pub(crate) fn scan_books(epd: &mut Epd, sd_cs: &mut Output<'static>, library: &m
         if library.count == 0 {
             LibraryScanStatus::Empty
         } else {
+            let _ = write_catalog_cache(&root, library);
             LibraryScanStatus::Ready
         }
     };
     epd.spi_mut().change_bus_frequency(40_u32.MHz());
-    library.status = status;
+    library.status = if status == LibraryScanStatus::Error && library.count > 0 {
+        LibraryScanStatus::Ready
+    } else {
+        status
+    };
     esp_println::println!("sd: scan complete, {} epub(s)", library.count);
+}
+
+pub(crate) fn load_catalog_cache(
+    epd: &mut Epd,
+    sd_cs: &mut Output<'static>,
+    library: &mut ReaderStore,
+) -> bool {
+    esp_println::println!("sd: catalog cache load start");
+    epd.deselect_display();
+    sd_cs.set_high();
+    epd.spi_mut().change_bus_frequency(400_u32.kHz());
+
+    let startup_clocks = [0xFF; 10];
+    if BlockingSpiBus::write(epd.spi_mut(), &startup_clocks).is_err() {
+        epd.spi_mut().change_bus_frequency(40_u32.MHz());
+        return false;
+    }
+
+    let loaded = 'load: {
+        let spi = SdSpiDevice {
+            spi: epd.spi_mut(),
+            cs: sd_cs,
+            delay: esp_hal::delay::Delay::new(),
+        };
+        let card = SdCard::new(spi, esp_hal::delay::Delay::new());
+        if card.num_bytes().is_err() {
+            break 'load false;
+        }
+        card.spi(|device| device.spi.change_bus_frequency(8_u32.MHz()));
+        let volume_mgr: VolumeManager<_, _, 4, 4, 1> = VolumeManager::new(card, StaticTime);
+        let Ok(volume) = volume_mgr.open_volume(VolumeIdx(0)) else {
+            break 'load false;
+        };
+        let Ok(root) = volume.open_root_dir() else {
+            break 'load false;
+        };
+        read_catalog_cache(&root, library).is_ok()
+    };
+    epd.spi_mut().change_bus_frequency(40_u32.MHz());
+    if loaded {
+        esp_println::println!("sd: catalog cache loaded {} epub(s)", library.count);
+    } else {
+        esp_println::println!("sd: catalog cache unavailable");
+    }
+    loaded
+}
+
+fn write_catalog_cache<
+    D,
+    T,
+    const MAX_DIRS: usize,
+    const MAX_FILES: usize,
+    const MAX_VOLUMES: usize,
+>(
+    root: &Directory<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
+    library: &ReaderStore,
+) -> Result<(), ()>
+where
+    D: embedded_sdmmc::BlockDevice,
+    T: TimeSource,
+{
+    let xteink = open_or_make_dir(root, CATALOG_ROOT_DIR)?;
+    let file = xteink
+        .open_file_in_dir(CATALOG_FILE, Mode::ReadWriteCreateOrTruncate)
+        .map_err(|_| ())?;
+    let mut header = [0u8; CATALOG_HEADER_BYTES];
+    header[..4].copy_from_slice(CATALOG_MAGIC);
+    header[4] = CATALOG_VERSION;
+    header[5] = library.count.min(u8::MAX as usize) as u8;
+    file.write(&header).map_err(|_| ())?;
+    let mut record = [0u8; CATALOG_RECORD_BYTES];
+    for entry in library.entries.iter().take(library.count) {
+        record.fill(0);
+        record[0] = entry.in_books_dir as u8;
+        record[4..8].copy_from_slice(&entry.byte_size.to_le_bytes());
+        record[8..12].copy_from_slice(&entry.source_hash.to_le_bytes());
+        copy_fixed(entry.display_name.as_bytes(), &mut record[12..76]);
+        copy_fixed(entry.open_name.as_bytes(), &mut record[76..92]);
+        file.write(&record).map_err(|_| ())?;
+    }
+    Ok(())
+}
+
+fn read_catalog_cache<
+    D,
+    T,
+    const MAX_DIRS: usize,
+    const MAX_FILES: usize,
+    const MAX_VOLUMES: usize,
+>(
+    root: &Directory<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
+    library: &mut ReaderStore,
+) -> Result<(), ()>
+where
+    D: embedded_sdmmc::BlockDevice,
+    T: TimeSource,
+{
+    let xteink = root.open_dir(CATALOG_ROOT_DIR).map_err(|_| ())?;
+    let file = xteink
+        .open_file_in_dir(CATALOG_FILE, Mode::ReadOnly)
+        .map_err(|_| ())?;
+    let mut header = [0u8; CATALOG_HEADER_BYTES];
+    read_exact_file(&file, &mut header)?;
+    if &header[..4] != CATALOG_MAGIC || header[4] != CATALOG_VERSION {
+        return Err(());
+    }
+    let count = header[5] as usize;
+    library.clear_catalog();
+    let mut record = [0u8; CATALOG_RECORD_BYTES];
+    for _ in 0..count.min(crate::reader_store::MAX_LIBRARY_BOOKS) {
+        read_exact_file(&file, &mut record)?;
+        let display_name = fixed_str(&record[12..76]);
+        let open_name = fixed_str(&record[76..92]);
+        if display_name.is_empty() || open_name.is_empty() {
+            continue;
+        }
+        library.push(
+            display_name,
+            open_name,
+            record[0] != 0,
+            u32::from_le_bytes([record[4], record[5], record[6], record[7]]),
+        );
+        if let Some(entry) = library.entries.get_mut(library.count.saturating_sub(1)) {
+            entry.source_hash = u32::from_le_bytes([record[8], record[9], record[10], record[11]]);
+        }
+    }
+    library.status = if library.count == 0 {
+        LibraryScanStatus::Empty
+    } else {
+        LibraryScanStatus::Ready
+    };
+    Ok(())
+}
+
+fn open_or_make_dir<
+    'a,
+    D,
+    T,
+    const MAX_DIRS: usize,
+    const MAX_FILES: usize,
+    const MAX_VOLUMES: usize,
+>(
+    parent: &'a Directory<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
+    name: &str,
+) -> Result<Directory<'a, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>, ()>
+where
+    D: embedded_sdmmc::BlockDevice,
+    T: TimeSource,
+{
+    match parent.open_dir(name) {
+        Ok(dir) => Ok(dir),
+        Err(_) => {
+            let _ = parent.make_dir_in_dir(name);
+            parent.open_dir(name).map_err(|_| ())
+        }
+    }
+}
+
+fn read_exact_file<D, T, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize>(
+    file: &File<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
+    mut out: &mut [u8],
+) -> Result<(), ()>
+where
+    D: embedded_sdmmc::BlockDevice,
+    T: TimeSource,
+{
+    while !out.is_empty() {
+        let read = file.read(out).map_err(|_| ())?;
+        if read == 0 {
+            return Err(());
+        }
+        let tmp = out;
+        out = &mut tmp[read..];
+    }
+    Ok(())
+}
+
+fn copy_fixed(src: &[u8], dst: &mut [u8]) {
+    let len = src.len().min(dst.len());
+    dst[..len].copy_from_slice(&src[..len]);
+}
+
+fn fixed_str(bytes: &[u8]) -> &str {
+    let len = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    core::str::from_utf8(&bytes[..len]).unwrap_or("")
 }
 
 fn collect_epubs<D, T, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize>(

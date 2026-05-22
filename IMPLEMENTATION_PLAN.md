@@ -32,7 +32,7 @@ Current code status:
 | Deep sleep | Idle/power sleep now renders a visible sleep screen before SSD1677 deep sleep; GPIO wake pending |
 | Partial refresh | Deferred; full-screen fast refresh present |
 | NVM progress | Deferred |
-| Storage / EPUB / Wi-Fi | EPUB stream reader, FAT scan, `/books` then card-root discovery, and SD-backed hybrid-light section cache present; Wi-Fi still pending |
+| Storage / EPUB / Wi-Fi | Explicit storage commands, FAT scan, `/books` then card-root discovery, catalog snapshot cache, and SD-backed hybrid-light section cache present; Wi-Fi still pending |
 | Typography | Literata Latin-1 bitmap assets generated; Reading uses Literata for demo text |
 
 ## Phase 2: measured board support
@@ -112,9 +112,18 @@ Current code status:
 - X4 SD pins are configured on the shared SPI bus: SCK GPIO8, MOSI GPIO10, MISO
   GPIO7, SD CS GPIO12. `embedded-sdmmc` is present with default features
   disabled.
-- The display task remains the single runtime coordinator for serialized EPD and
-  SD transactions, while SD discovery, EPUB cache construction, reader layout,
-  view drawing, and EPD flushing now live in deeper `fw` modules.
+- Render is side-effect free. `DisplayCommand::Render` only draws the current
+  `ReaderStore` snapshot and flushes the panel. SD discovery, EPUB cache
+  construction, and progress writes run only through explicit `StorageCommand`s
+  after the visible render settles.
+- The board I/O/display task remains the single runtime coordinator for
+  serialized EPD and SD transactions, while SD discovery, EPUB cache
+  construction, reader layout, view drawing, and EPD flushing now live in deeper
+  `fw` modules.
+- Files is instant and catalog-backed. `/XTEINK/CATALOG.BIN` stores a flat fixed
+  record list of discovered EPUBs. Firmware may show “Library unavailable” while
+  no catalog snapshot exists; it shows “No books available” only after a
+  completed scan proves there are no EPUBs.
 
 ## Phase 4b: typography and preview
 

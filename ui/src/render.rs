@@ -53,19 +53,20 @@ fn render_library(fb: &mut Framebuffer, shell: &UiShell<'_>) {
 
     match shell.library_status {
         UiLibraryStatus::NotScanned | UiLibraryStatus::Scanning => {
-            draw_text(fb, body_font, "Scanning microSD", 58, 190, false);
+            draw_text(fb, body_font, "Library unavailable", 58, 190, false);
+            draw_text(fb, meta_font, "Storage catalog not loaded", 58, 224, false);
             mirror_framebuffer_long_axis(fb);
             return;
         }
         UiLibraryStatus::Error => {
-            draw_text(fb, body_font, "microSD not ready", 58, 190, false);
-            draw_text(fb, meta_font, "Use FAT16/FAT32", 58, 224, false);
+            draw_text(fb, body_font, "Library unavailable", 58, 190, false);
+            draw_text(fb, meta_font, "Storage catalog not loaded", 58, 224, false);
             mirror_framebuffer_long_axis(fb);
             return;
         }
         UiLibraryStatus::Empty => {
-            draw_text(fb, body_font, "No EPUB files found", 58, 190, false);
-            draw_text(fb, meta_font, "Put books in /books", 58, 224, false);
+            draw_text(fb, body_font, "No books available", 58, 190, false);
+            draw_text(fb, meta_font, "Add EPUB files to /books", 58, 224, false);
             mirror_framebuffer_long_axis(fb);
             return;
         }
@@ -73,7 +74,8 @@ fn render_library(fb: &mut Framebuffer, shell: &UiShell<'_>) {
     }
 
     if shell.library_entries.is_empty() {
-        draw_text(fb, body_font, "No EPUB files found", 58, 190, false);
+        draw_text(fb, body_font, "No books available", 58, 190, false);
+        draw_text(fb, meta_font, "Add EPUB files to /books", 58, 224, false);
         mirror_framebuffer_long_axis(fb);
         return;
     }
