@@ -11,7 +11,7 @@ use proto::text::{TextAlign, TextRole};
 pub(crate) const MAX_LIBRARY_BOOKS: usize = 8;
 pub(crate) const MAX_SD_TOC_ITEMS: usize = 64;
 pub(crate) const MAX_BOOK_SECTIONS: usize = 96;
-const MAX_PUBLISHED_CHAPTER_EVENTS: usize = 60;
+const MAX_PUBLISHED_CHAPTER_EVENTS: usize = 24;
 pub(crate) const MAX_SD_TOC_TEXT_BYTES: usize = 4096;
 pub(crate) const MAX_READER_BLOCKS: usize = 384;
 pub(crate) const MAX_READER_PAGES: usize = 96;

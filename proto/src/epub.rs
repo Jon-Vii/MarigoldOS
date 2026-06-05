@@ -741,6 +741,7 @@ pub fn parse_opf<'a>(
     let title = element_text(opf_xml, "title").unwrap_or("Untitled");
     let author = element_text(opf_xml, "creator").unwrap_or("Unknown Author");
 
+    let spine_idrefs = collect_spine_idrefs(opf_xml);
     let mut manifest = Vec::new();
     let mut in_manifest = false;
     let mut cursor = XmlCursor::new(opf_xml);
@@ -757,7 +758,7 @@ pub fn parse_opf<'a>(
                 };
                 let media_type = attr_value(tag, "media-type").unwrap_or("");
                 let properties = attr_value(tag, "properties").unwrap_or("");
-                if manifest_item_needed(id, href, media_type, properties, opf_xml) {
+                if manifest_item_needed(id, href, media_type, properties, &spine_idrefs) {
                     manifest
                         .push(ManifestItem {
                             id,
@@ -799,19 +800,7 @@ pub fn parse_opf<'a>(
         }
     }
     if spine.is_empty() {
-        for item in manifest
-            .iter()
-            .filter(|item| manifest_item_is_reading_candidate(item))
-        {
-            spine
-                .push(SpineItem {
-                    idref: item.id,
-                    href: item.href,
-                    media_type: item.media_type,
-                    properties: item.properties,
-                })
-                .ok();
-        }
+        collect_fallback_spine_items(opf_xml, &mut spine)?;
     }
 
     let text_reference_href = find_guide_reference(opf_xml, "text")
@@ -860,6 +849,65 @@ pub fn xhtml_text_runs<'a>(
     xhtml_text_runs_with_css(xhtml, None, output)
 }
 
+fn collect_fallback_spine_items<'a>(
+    opf_xml: &'a str,
+    spine: &mut Vec<SpineItem<'a>, MAX_SPINE_ITEMS>,
+) -> Result<(), EpubError> {
+    let mut in_manifest = false;
+    let mut cursor = XmlCursor::new(opf_xml);
+    while let Some(token) = cursor.next_token() {
+        match token {
+            Token::Start(tag) if tag_name_is(tag, "manifest") => in_manifest = true,
+            Token::End(tag) if tag_name_is(tag, "manifest") => in_manifest = false,
+            Token::Start(tag) if in_manifest && tag_name_is(tag, "item") => {
+                let Some(id) = attr_value(tag, "id") else {
+                    continue;
+                };
+                let Some(href) = attr_value(tag, "href") else {
+                    continue;
+                };
+                let media_type = attr_value(tag, "media-type").unwrap_or("");
+                let properties = attr_value(tag, "properties").unwrap_or("");
+                let item = ManifestItem {
+                    id,
+                    href,
+                    media_type,
+                    properties,
+                };
+                if manifest_item_is_reading_candidate(&item) {
+                    let _ = spine.push(SpineItem {
+                        idref: id,
+                        href,
+                        media_type,
+                        properties,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn collect_spine_idrefs<'a>(opf_xml: &'a str) -> Vec<&'a str, MAX_SPINE_ITEMS> {
+    let mut idrefs = Vec::new();
+    let mut in_spine = false;
+    let mut cursor = XmlCursor::new(opf_xml);
+    while let Some(token) = cursor.next_token() {
+        match token {
+            Token::Start(tag) if tag_name_is(tag, "spine") => in_spine = true,
+            Token::End(tag) if tag_name_is(tag, "spine") => in_spine = false,
+            Token::Start(tag) if in_spine && tag_name_is(tag, "itemref") => {
+                if let Some(idref) = attr_value(tag, "idref") {
+                    let _ = idrefs.push(idref);
+                }
+            }
+            _ => {}
+        }
+    }
+    idrefs
+}
+
 fn manifest_item_is_reading_candidate(item: &ManifestItem<'_>) -> bool {
     if item.href.is_empty()
         || item
@@ -885,39 +933,16 @@ fn manifest_item_needed(
     href: &str,
     media_type: &str,
     properties: &str,
-    opf_xml: &str,
+    spine_idrefs: &Vec<&str, MAX_SPINE_ITEMS>,
 ) -> bool {
-    spine_contains_idref(opf_xml, id)
+    spine_idrefs.iter().any(|idref| *idref == id)
         || properties
             .split_ascii_whitespace()
             .any(|prop| prop == "nav" || prop == "cover-image")
         || media_type.eq_ignore_ascii_case("application/x-dtbncx+xml")
-        || media_type.eq_ignore_ascii_case("application/xhtml+xml")
-        || href.ends_with(".xhtml")
-        || href.ends_with(".html")
-        || media_type.contains("css")
         || id == "cover"
         || href.contains("cover")
         || href.ends_with(".ncx")
-        || href.ends_with(".css")
-}
-
-fn spine_contains_idref(opf_xml: &str, id: &str) -> bool {
-    let mut in_spine = false;
-    let mut cursor = XmlCursor::new(opf_xml);
-    while let Some(token) = cursor.next_token() {
-        match token {
-            Token::Start(tag) if tag_name_is(tag, "spine") => in_spine = true,
-            Token::End(tag) if tag_name_is(tag, "spine") => in_spine = false,
-            Token::Start(tag) if in_spine && tag_name_is(tag, "itemref") => {
-                if attr_value(tag, "idref") == Some(id) {
-                    return true;
-                }
-            }
-            _ => {}
-        }
-    }
-    false
 }
 
 pub fn xhtml_text_runs_with_css<'a>(

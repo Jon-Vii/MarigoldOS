@@ -369,12 +369,19 @@ where
         opf_entry.compressed_size,
         opf_entry.uncompressed_size
     );
-    let opf_len = zip.read_entry_streamed(
+    let (opf_len, opf_complete) = zip.read_entry_prefix_streamed(
         opf_entry,
         scratch.compressed,
         scratch.opf,
         &mut scratch.zip_inflate,
     )?;
+    if !opf_complete {
+        esp_println::println!(
+            "epub: opf prefix truncated at {} of {} bytes",
+            opf_len,
+            opf_entry.uncompressed_size
+        );
+    }
     let opf_xml =
         core::str::from_utf8(&scratch.opf[..opf_len]).map_err(|_| ReaderCacheError::Utf8)?;
     let package = parse_opf(opf_xml, BookId(2), source_path, 0, opf_path)?;
