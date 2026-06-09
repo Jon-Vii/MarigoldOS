@@ -14,7 +14,7 @@ use ui::{
 };
 
 const SHOW_INPUT_DEBUG: bool = false;
-const MAX_UI_CHAPTERS: usize = 64;
+const MAX_UI_CHAPTERS: usize = app_core::MAX_SD_CHAPTERS;
 
 pub(crate) fn render(fb: &mut Framebuffer, request: RenderRequest, sd_library: &ReaderStore) {
     if request.view == AppView::Reading && ReaderSource::from_book_id(request.book_id).is_sd() {

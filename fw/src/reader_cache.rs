@@ -7,7 +7,6 @@ use crate::reader_store::{
     MAX_READER_BLOCK_TEXT,
 };
 use crate::sd_session::{self, SdSessionError};
-use core::fmt::Write;
 use display::font::{literata, FontStyle};
 use embassy_time::Instant;
 use embedded_sdmmc::{Directory, File, Mode, TimeSource};
@@ -17,9 +16,9 @@ use heapless::String;
 use proto::book::BookId;
 use proto::cache::BookV2SectionRecord;
 use proto::epub::{
-    parse_epub2_ncx_to_sink, parse_epub3_nav_to_sink, parse_opf, xhtml_blocks_to_sink, ByteStream,
-    CssRules, EpubTocSink, OwnedZipEntry, ReadAt, TocError, XhtmlBlockSink, XhtmlError,
-    ZipInflateScratch, ZipLocalStream, ZipStream, MAX_ENTRY_NAME_BYTES,
+    parse_opf, xhtml_blocks_to_sink, ByteStream, CssRules, Epub3NavStreamParser, EpubTocSink,
+    NcxStreamParser, OwnedZipEntry, ReadAt, StreamingXmlTokenizer, TocError, XhtmlBlockSink,
+    XhtmlError, ZipInflateScratch, ZipLocalStream, ZipStream, MAX_ENTRY_NAME_BYTES,
 };
 use proto::text::{TextAlign, TextRole};
 
@@ -32,19 +31,6 @@ pub(crate) const READER_XHTML_SCRATCH: usize = 24_576;
 const EPUB_READ_AT_CHUNK_BYTES: usize = 2048;
 const EPUB_OPEN_READ_OP_LIMIT: u32 = 65_536;
 const EPUB_OPEN_READ_BYTE_LIMIT: u32 = 64 * 1024 * 1024;
-const HPMOR_SPINE_OFFSETS: [u32; 124] = [
-    1137366, 1493123, 1522817, 1476310, 1488195, 616396, 1270258, 1408913, 443692, 936697, 1666941,
-    1366104, 483790, 1418260, 432749, 415769, 312981, 123506, 1426246, 532882, 849058, 1146032,
-    102377, 1534315, 8314, 1506331, 779449, 602194, 390000, 1046197, 1442672, 1616619, 1562511,
-    82477, 501348, 1206161, 1172349, 300893, 511434, 737269, 405345, 1597128, 1712500, 740281,
-    871954, 747098, 507725, 840141, 726472, 160908, 1255401, 808103, 92230, 683767, 791082, 203859,
-    146835, 622293, 1524563, 1184406, 1244027, 764623, 564047, 207984, 1230805, 1331026, 188611,
-    574670, 587730, 1195829, 1494001, 523461, 1462466, 880389, 992950, 132984, 1022037, 654609,
-    1138207, 700799, 1088823, 1068718, 468801, 892817, 1398572, 413474, 1373068, 1581591, 335488,
-    638358, 921364, 800590, 287190, 1550874, 85841, 592689, 223881, 250292, 326211, 233945,
-    1013804, 81955, 101890, 261545, 305, 829339, 1165436, 1688435, 73406, 1483655, 910147, 1631835,
-    670200, 277330, 53189, 282940, 820959, 776643, 117653, 692270, 1264028, 1681903, 906627, 29411,
-];
 
 pub(crate) struct ReaderCacheScratch<'a> {
     tail: &'a mut [u8; READER_TAIL_SCRATCH],
@@ -62,7 +48,6 @@ struct TocScratch<'a> {
     header: &'a mut [u8; 46],
     name: &'a mut [u8; MAX_ENTRY_NAME_BYTES],
     compressed: &'a mut [u8; READER_COMPRESSED_SCRATCH],
-    xhtml: &'a mut [u8; READER_XHTML_SCRATCH],
     zip_inflate: &'a mut ZipInflateScratch,
 }
 
@@ -200,7 +185,6 @@ where
         "epub: stage TryV2BookIndexFast page={}",
         target_pages as u32
     );
-    let hpmor_entry = in_books_dir && open_name.eq_ignore_ascii_case("HPMOR.EPU");
     if try_load_v2_book_cache(
         root,
         cache_key.as_str(),
@@ -210,72 +194,31 @@ where
         Instant::now(),
         "fast",
     ) {
-        if hpmor_entry
-            && library.book_cache_partial
-            && library.book_section_count < HPMOR_SPINE_OFFSETS.len()
-        {
-            esp_println::println!("epub: hpmor partial cache ignored; rebuilding");
-        } else {
-            return BookLoadStatus::Ready;
-        }
-    }
-
-    if hpmor_entry {
-        library.begin_book_load();
-        library.set_cache_key(cache_key.as_str());
+        return BookLoadStatus::Ready;
     }
 
     if in_books_dir {
-        let load_result = if hpmor_entry {
-            match root.open_dir("CALIBRE") {
-                Ok(calibre) => match calibre.open_file_in_dir("HARRY_~1.EPU", Mode::ReadOnly) {
-                    Ok(file) => {
-                        esp_println::println!("epub: using HPMOR direct entry map");
-                        Some(build_hpmor_known_cache_from_file(
-                            file,
-                            root,
-                            &display_name,
-                            requested_chapter,
-                            target_pages,
-                            library,
-                            scratch,
-                        ))
-                    }
-                    Err(err) => {
-                        esp_println::println!("epub: open calibre HPMOR failed: {:?}", err);
-                        set_preview_error(library, "FILE");
-                        None
-                    }
-                },
+        let load_result = match root.open_dir("BOOKS") {
+            Ok(books) => match books.open_file_in_dir(open_name.as_str(), Mode::ReadOnly) {
+                Ok(file) => Some(build_or_load_epub_cache_from_file(
+                    file,
+                    root,
+                    &display_name,
+                    requested_chapter,
+                    target_pages,
+                    library,
+                    scratch,
+                )),
                 Err(err) => {
-                    esp_println::println!("epub: open /CALIBRE failed: {:?}", err);
-                    set_preview_error(library, "CALIBRE");
+                    esp_println::println!("epub: open file failed: {:?}", err);
+                    set_preview_error(library, "FILE");
                     None
                 }
-            }
-        } else {
-            match root.open_dir("BOOKS") {
-                Ok(books) => match books.open_file_in_dir(open_name.as_str(), Mode::ReadOnly) {
-                    Ok(file) => Some(build_or_load_epub_cache_from_file(
-                        file,
-                        root,
-                        &display_name,
-                        requested_chapter,
-                        target_pages,
-                        library,
-                        scratch,
-                    )),
-                    Err(err) => {
-                        esp_println::println!("epub: open file failed: {:?}", err);
-                        set_preview_error(library, "FILE");
-                        None
-                    }
-                },
-                Err(err) => {
-                    esp_println::println!("epub: open /books failed: {:?}", err);
-                    set_preview_error(library, "BOOKS DIR");
-                    None
-                }
+            },
+            Err(err) => {
+                esp_println::println!("epub: open /books failed: {:?}", err);
+                set_preview_error(library, "BOOKS DIR");
+                None
             }
         };
         status_for_load_result(load_result, library)
@@ -474,6 +417,15 @@ trait EpubZipOps {
         output: &mut [u8],
         inflate_scratch: &mut ZipInflateScratch,
     ) -> Result<(usize, bool), proto::epub::ZipError>;
+
+    fn read_entry_to_sink(
+        &mut self,
+        entry: OwnedZipEntry,
+        compressed_scratch: &mut [u8],
+        output_window: &mut [u8],
+        inflate_scratch: &mut ZipInflateScratch,
+        emit: &mut dyn FnMut(&[u8]) -> Result<(), proto::epub::ZipError>,
+    ) -> Result<(), proto::epub::ZipError>;
 }
 
 impl<R> EpubZipOps for ZipStream<'_, R>
@@ -512,6 +464,24 @@ where
             compressed_scratch,
             output,
             inflate_scratch,
+        )
+    }
+
+    fn read_entry_to_sink(
+        &mut self,
+        entry: OwnedZipEntry,
+        compressed_scratch: &mut [u8],
+        output_window: &mut [u8],
+        inflate_scratch: &mut ZipInflateScratch,
+        emit: &mut dyn FnMut(&[u8]) -> Result<(), proto::epub::ZipError>,
+    ) -> Result<(), proto::epub::ZipError> {
+        ZipStream::read_entry_to_sink(
+            self,
+            entry,
+            compressed_scratch,
+            output_window,
+            inflate_scratch,
+            emit,
         )
     }
 }
@@ -562,6 +532,24 @@ where
             compressed_scratch,
             output,
             inflate_scratch,
+        )
+    }
+
+    fn read_entry_to_sink(
+        &mut self,
+        entry: OwnedZipEntry,
+        compressed_scratch: &mut [u8],
+        output_window: &mut [u8],
+        inflate_scratch: &mut ZipInflateScratch,
+        emit: &mut dyn FnMut(&[u8]) -> Result<(), proto::epub::ZipError>,
+    ) -> Result<(), proto::epub::ZipError> {
+        ZipLocalStream::read_entry_to_sink(
+            self,
+            entry,
+            compressed_scratch,
+            output_window,
+            inflate_scratch,
+            emit,
         )
     }
 }
@@ -627,155 +615,6 @@ where
             zip_inflate: &mut scratch.zip_inflate,
         },
     )
-}
-
-fn build_hpmor_known_cache_from_file<
-    D,
-    T,
-    const MAX_DIRS: usize,
-    const MAX_FILES: usize,
-    const MAX_VOLUMES: usize,
->(
-    mut file: File<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
-    root: &Directory<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
-    source_path: &str,
-    _requested_chapter: u8,
-    target_pages: usize,
-    library: &mut ReaderStore,
-    scratch: &mut ReaderCacheScratch<'_>,
-) -> Result<(), ReaderCacheError>
-where
-    D: embedded_sdmmc::BlockDevice,
-    T: TimeSource,
-{
-    let open_started = Instant::now();
-    let source_len = file.length();
-    let source_identity = (source_hash(source_path, source_len), source_len);
-    let cache_key = proto::cache::cache_key_for(source_path, source_len);
-    library.set_cache_key(cache_key.as_str());
-    library.set_book_labels(
-        "Harry Potter and the Methods of Rationality",
-        "Eliezer Yudkowsky",
-    );
-    library.clear_cover();
-    library.clear_toc();
-
-    esp_println::println!("epub: stage OpenSdFile len={}", source_len);
-    esp_println::println!("epub: stage BuildHpmorKnownCache");
-    scratch.book_sections.fill(EMPTY_BOOK_SECTION_RECORD);
-    let sections = &mut *scratch.book_sections;
-    let mut section_count = 0usize;
-    let mut total_pages = 0u32;
-    let mut book_partial = false;
-    let visible_page_capacity = library.page_capacity().max(1);
-
-    for (spine_index, offset) in HPMOR_SPINE_OFFSETS.iter().copied().enumerate() {
-        if section_count >= sections.len() {
-            book_partial = true;
-            break;
-        }
-        let mut xhtml_path = String::<MAX_ENTRY_NAME_BYTES>::new();
-        write!(&mut xhtml_path, "hpmor_split_{:03}.html", spine_index)
-            .map_err(|_| ReaderCacheError::EntryNameTooLong)?;
-        file.seek_from_start(offset)
-            .map_err(|_| ReaderCacheError::Zip(proto::epub::ZipError::Io))?;
-        let reader = SdFileBorrowStream {
-            file: &mut file,
-            len: source_len,
-            position: offset,
-            read_ops: 0,
-            read_bytes: 0,
-        };
-        let mut zip = ZipLocalStream::new(reader);
-        let xhtml_entry = zip.find_entry(&xhtml_path, scratch.header, scratch.name)?;
-        let (xhtml_len, xhtml_complete) = zip.read_entry_prefix_streamed(
-            xhtml_entry,
-            scratch.compressed,
-            scratch.xhtml,
-            &mut scratch.zip_inflate,
-        )?;
-        let xhtml_len = valid_utf8_prefix_len(&scratch.xhtml[..xhtml_len], xhtml_complete)?;
-        let xhtml = core::str::from_utf8(&scratch.xhtml[..xhtml_len])
-            .map_err(|_| ReaderCacheError::Utf8)?;
-
-        library.clear_lines();
-        let mut sink = LibraryBlockSink {
-            library,
-            root,
-            cache_key: cache_key.as_str(),
-            source_identity,
-            sections: &mut *sections,
-            section_count: &mut section_count,
-            total_pages: &mut total_pages,
-            book_partial: &mut book_partial,
-            spine_index: spine_index.min(u16::MAX as usize) as u16,
-            line: String::new(),
-            line_role: TextRole::Body,
-            line_align: TextAlign::Justify,
-            line_style: FontStyle::Regular,
-            pending_space: false,
-            dropping_paragraph: false,
-            stopped: false,
-            target_pages: visible_page_capacity,
-            generate_toc_from_headings: true,
-            generated_toc_for_spine: false,
-        };
-        match xhtml_blocks_to_sink(xhtml, None, &mut sink) {
-            Ok(()) => {}
-            Err(err) if sink.stopped => {
-                esp_println::println!(
-                    "epub: hpmor bounded open stopped at spine {} after {} section(s): {:?}",
-                    spine_index,
-                    *sink.section_count,
-                    err
-                );
-            }
-            Err(err) => return Err(err.into()),
-        }
-        sink.finish_spine(!xhtml_complete);
-    }
-
-    if section_count == 0 || total_pages == 0 {
-        return Err(ReaderCacheError::NoBodyText);
-    }
-
-    let sections_slice = &sections[..section_count];
-    let wrote_index = reader_cache_files::write_v2_book_index(
-        root,
-        cache_key.as_str(),
-        source_identity,
-        total_pages,
-        sections_slice,
-        library,
-        book_partial,
-    );
-    library.set_book_index(total_pages, book_partial || !wrote_index, sections_slice);
-    match reader_cache_files::load_v2_section_by_global_page(
-        root,
-        cache_key.as_str(),
-        source_identity,
-        (target_pages as u32).min(total_pages.saturating_sub(1)),
-        library,
-    ) {
-        CacheLoadResult::Hit { .. } => {}
-        _ => {
-            let first = sections_slice[0];
-            library.set_current_section_range(first.start_page, first.page_count as usize);
-        }
-    }
-    reader_layout::rebuild_toc_page_targets(library);
-    let cover = reader_cache_files::load_v2_cover_cache(root, cache_key.as_str(), library);
-    esp_println::println!("epub: stage PublishLoaded");
-    esp_println::println!(
-        "epub: hpmor cache ready after {} ms (total={} sections={} partial={} cover={:?} key {})",
-        open_started.elapsed().as_millis(),
-        total_pages,
-        section_count,
-        book_partial,
-        cover,
-        cache_key.as_str()
-    );
-    Ok(())
 }
 
 struct ZipBuildScratch<'a> {
@@ -865,7 +704,6 @@ where
                 header: scratch.header,
                 name: scratch.name,
                 compressed: scratch.compressed,
-                xhtml: scratch.xhtml,
                 zip_inflate: &mut *scratch.zip_inflate,
             },
         );
@@ -1067,6 +905,11 @@ fn load_epub_toc<Z>(
     Z: EpubZipOps,
 {
     library.clear_toc();
+    // Small reusable window for inflate output. The streaming tokenizer
+    // consumes these chunks incrementally and never needs the whole TOC
+    // resident — so any-size book is fine.
+    let mut output_window = [0u8; 512];
+
     for toc_href in [package.nav_href, package.ncx_href].into_iter().flatten() {
         let mut toc_path = String::<MAX_ENTRY_NAME_BYTES>::new();
         if resolve_epub_href(opf_path, toc_href, &mut toc_path).is_err() {
@@ -1075,25 +918,48 @@ fn load_epub_toc<Z>(
         let Ok(toc_entry) = zip.find_entry(&toc_path, scratch.header, scratch.name) else {
             continue;
         };
-        let Ok(toc_len) = zip.read_entry_streamed(
-            toc_entry,
-            scratch.compressed,
-            scratch.xhtml,
-            scratch.zip_inflate,
-        ) else {
-            continue;
-        };
-        let Ok(toc_text) = core::str::from_utf8(&scratch.xhtml[..toc_len]) else {
-            continue;
-        };
 
         let mut sink = LibraryTocSink { library, package };
-        let result = if toc_path.as_str().ends_with(".ncx") {
-            parse_epub2_ncx_to_sink(toc_text, &mut sink)
+        let mut tokenizer = StreamingXmlTokenizer::new();
+        let is_ncx = toc_path.as_str().ends_with(".ncx");
+        let parse_ok = if is_ncx {
+            let mut parser = NcxStreamParser::new();
+            let feed_result = zip.read_entry_to_sink(
+                toc_entry,
+                scratch.compressed,
+                &mut output_window,
+                scratch.zip_inflate,
+                &mut |chunk| {
+                    tokenizer
+                        .feed_ncx(chunk, &mut parser, &mut sink)
+                        .map_err(|_| proto::epub::ZipError::Inflate)
+                },
+            );
+            feed_result.is_ok()
+                && tokenizer.finish_ncx(&mut parser, &mut sink).is_ok()
         } else {
-            parse_epub3_nav_to_sink(toc_text, &mut sink)
+            let mut parser = Epub3NavStreamParser::new();
+            let feed_result = zip.read_entry_to_sink(
+                toc_entry,
+                scratch.compressed,
+                &mut output_window,
+                scratch.zip_inflate,
+                &mut |chunk| {
+                    tokenizer
+                        .feed_nav(chunk, &mut parser, &mut sink)
+                        .map_err(|_| proto::epub::ZipError::Inflate)
+                },
+            );
+            feed_result.is_ok()
+                && tokenizer.finish_nav(&mut parser, &mut sink).is_ok()
         };
-        if result.is_ok() && sink.library.toc_count() > 0 {
+
+        if parse_ok && sink.library.toc_count() > 0 {
+            esp_println::println!(
+                "epub: toc streamed {} item(s) from {}",
+                sink.library.toc_count(),
+                toc_path.as_str()
+            );
             return;
         }
         sink.library.clear_toc();
@@ -1131,71 +997,6 @@ struct SdFileReadAt<
     len: u32,
     read_ops: u32,
     read_bytes: u32,
-}
-
-struct SdFileBorrowStream<
-    'a,
-    'f,
-    D,
-    T,
-    const MAX_DIRS: usize,
-    const MAX_FILES: usize,
-    const MAX_VOLUMES: usize,
-> where
-    D: embedded_sdmmc::BlockDevice,
-    T: TimeSource,
-{
-    file: &'f mut File<'a, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
-    len: u32,
-    position: u32,
-    read_ops: u32,
-    read_bytes: u32,
-}
-
-impl<D, T, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize> ByteStream
-    for SdFileBorrowStream<'_, '_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>
-where
-    D: embedded_sdmmc::BlockDevice,
-    T: TimeSource,
-{
-    type Error = ();
-
-    fn read(&mut self, out: &mut [u8]) -> Result<usize, Self::Error> {
-        if self.position >= self.len {
-            return Ok(0);
-        }
-        if self.read_ops >= EPUB_OPEN_READ_OP_LIMIT || self.read_bytes >= EPUB_OPEN_READ_BYTE_LIMIT
-        {
-            esp_println::println!(
-                "epub: hpmor read budget exceeded ops={} bytes={} request={}",
-                self.read_ops,
-                self.read_bytes,
-                out.len()
-            );
-            return Err(());
-        }
-        let remaining_budget = EPUB_OPEN_READ_BYTE_LIMIT.saturating_sub(self.read_bytes) as usize;
-        let remaining_file = self.len.saturating_sub(self.position) as usize;
-        let read_len = out
-            .len()
-            .min(EPUB_READ_AT_CHUNK_BYTES)
-            .min(remaining_budget)
-            .min(remaining_file);
-        if read_len == 0 {
-            return Err(());
-        }
-        let mut read_bounce = [0u8; 512];
-        let bounce_len = read_len.min(read_bounce.len());
-        let count = self
-            .file
-            .read(&mut read_bounce[..bounce_len])
-            .map_err(|_| ())?;
-        out[..count].copy_from_slice(&read_bounce[..count]);
-        self.position = self.position.saturating_add(count as u32);
-        self.read_ops = self.read_ops.saturating_add(1);
-        self.read_bytes = self.read_bytes.saturating_add(count as u32);
-        Ok(count)
-    }
 }
 
 impl<D, T, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize> ReadAt

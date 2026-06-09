@@ -8,10 +8,10 @@ use proto::cache::{
 use proto::text::{TextAlign, TextRole};
 
 pub(crate) const MAX_LIBRARY_BOOKS: usize = 16;
-pub(crate) const MAX_SD_TOC_ITEMS: usize = 64;
+pub(crate) const MAX_SD_TOC_ITEMS: usize = 128;
 pub(crate) const MAX_BOOK_SECTIONS: usize = 160;
-const MAX_PUBLISHED_CHAPTER_EVENTS: usize = 24;
-pub(crate) const MAX_SD_TOC_TEXT_BYTES: usize = 4096;
+const MAX_PUBLISHED_CHAPTER_EVENTS: usize = MAX_SD_CHAPTERS;
+pub(crate) const MAX_SD_TOC_TEXT_BYTES: usize = 8192;
 pub(crate) const MAX_READER_BLOCKS: usize = 384;
 pub(crate) const MAX_READER_PAGES: usize = 96;
 pub(crate) const MAX_READER_TEXT_BYTES: usize = 16_384;

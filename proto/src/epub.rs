@@ -256,6 +256,136 @@ where
         }
     }
 
+    /// Stream a zip entry's uncompressed bytes into a caller-supplied sink.
+    /// The `output_window` buffer is reused across chunks; it only needs to be
+    /// large enough to make forward progress (a few hundred bytes is plenty).
+    /// `emit` is invoked with each filled window; the parser/tokenizer on the
+    /// other side consumes them incrementally and never has to materialize the
+    /// whole entry in RAM.
+    pub fn read_entry_to_sink<F>(
+        &mut self,
+        entry: OwnedZipEntry,
+        input: &mut [u8],
+        output_window: &mut [u8],
+        inflate_scratch: &mut ZipInflateScratch,
+        mut emit: F,
+    ) -> Result<(), ZipError>
+    where
+        F: FnMut(&[u8]) -> Result<(), ZipError>,
+    {
+        if entry.local_header_offset != self.pending_payload_offset
+            || entry.compressed_size != self.pending_payload_remaining
+        {
+            return Err(ZipError::BadLocalHeader);
+        }
+        match entry.compression_method {
+            0 => {
+                let mut remaining = entry.uncompressed_size as usize;
+                while remaining > 0 {
+                    let take = remaining.min(output_window.len());
+                    read_exact_stream(&mut self.reader, &mut output_window[..take])?;
+                    emit(&output_window[..take])?;
+                    remaining -= take;
+                }
+                let skip_after = entry
+                    .compressed_size
+                    .saturating_sub(entry.uncompressed_size) as usize;
+                skip_stream(&mut self.reader, skip_after)?;
+                self.cursor = self
+                    .pending_payload_offset
+                    .checked_add(entry.compressed_size)
+                    .ok_or(ZipError::BadLocalHeader)?;
+                self.pending_payload_remaining = 0;
+                Ok(())
+            }
+            8 => self.inflate_entry_to_sink(
+                entry.compressed_size,
+                input,
+                output_window,
+                inflate_scratch,
+                emit,
+            ),
+            _ => Err(ZipError::UnsupportedCompression),
+        }
+    }
+
+    fn inflate_entry_to_sink<F>(
+        &mut self,
+        compressed_size: u32,
+        input: &mut [u8],
+        output: &mut [u8],
+        inflate_scratch: &mut ZipInflateScratch,
+        mut emit: F,
+    ) -> Result<(), ZipError>
+    where
+        F: FnMut(&[u8]) -> Result<(), ZipError>,
+    {
+        if input.is_empty() || output.is_empty() {
+            return Err(ZipError::OutputTooSmall);
+        }
+        inflate_scratch.state.reset(DataFormat::Raw);
+        let mut compressed_read = 0u32;
+        let mut output_pos = 0usize;
+        while compressed_read < compressed_size {
+            let remaining = (compressed_size - compressed_read) as usize;
+            let input_len = input.len().min(remaining);
+            read_exact_stream(&mut self.reader, &mut input[..input_len])?;
+            compressed_read += input_len as u32;
+            let flush = if compressed_read == compressed_size {
+                MZFlush::Finish
+            } else {
+                MZFlush::None
+            };
+            let mut consumed = 0usize;
+            while consumed < input_len || flush == MZFlush::Finish {
+                if output_pos == output.len() {
+                    emit(&output[..output_pos])?;
+                    output_pos = 0;
+                }
+                let result = inflate(
+                    &mut inflate_scratch.state,
+                    &input[consumed..input_len],
+                    &mut output[output_pos..],
+                    flush,
+                );
+                consumed += result.bytes_consumed;
+                output_pos += result.bytes_written;
+                match result.status {
+                    Ok(MZStatus::StreamEnd) => {
+                        if output_pos > 0 {
+                            emit(&output[..output_pos])?;
+                        }
+                        self.cursor = self
+                            .pending_payload_offset
+                            .checked_add(compressed_size)
+                            .ok_or(ZipError::BadLocalHeader)?;
+                        self.pending_payload_remaining = 0;
+                        return Ok(());
+                    }
+                    Ok(MZStatus::Ok) => {
+                        if result.bytes_consumed == 0 && result.bytes_written == 0 {
+                            break;
+                        }
+                        if consumed == input_len {
+                            break;
+                        }
+                    }
+                    Ok(_) => return Err(ZipError::Inflate),
+                    Err(_) => return Err(ZipError::Inflate),
+                }
+            }
+        }
+        if output_pos > 0 {
+            emit(&output[..output_pos])?;
+        }
+        self.cursor = self
+            .pending_payload_offset
+            .checked_add(compressed_size)
+            .ok_or(ZipError::BadLocalHeader)?;
+        self.pending_payload_remaining = 0;
+        Ok(())
+    }
+
     fn inflate_entry_prefix(
         &mut self,
         compressed_size: u32,
@@ -508,6 +638,121 @@ where
             ),
             _ => Err(ZipError::UnsupportedCompression),
         }
+    }
+
+    /// Random-access counterpart to [`ZipLocalStream::read_entry_to_sink`].
+    /// Inflates a zip entry chunk-by-chunk and forwards each chunk to `emit`
+    /// without ever holding the full entry in RAM.
+    pub fn read_entry_to_sink<F>(
+        &mut self,
+        entry: OwnedZipEntry,
+        compressed_scratch: &mut [u8],
+        output_window: &mut [u8],
+        inflate_scratch: &mut ZipInflateScratch,
+        mut emit: F,
+    ) -> Result<(), ZipError>
+    where
+        F: FnMut(&[u8]) -> Result<(), ZipError>,
+    {
+        let payload_offset = self.entry_payload_offset(entry)?;
+        match entry.compression_method {
+            0 => {
+                let total = entry.uncompressed_size as usize;
+                let mut written = 0usize;
+                while written < total {
+                    let take = (total - written).min(output_window.len());
+                    read_exact_at(
+                        &mut self.reader,
+                        payload_offset + written as u32,
+                        &mut output_window[..take],
+                    )?;
+                    emit(&output_window[..take])?;
+                    written += take;
+                }
+                Ok(())
+            }
+            8 => self.inflate_entry_to_sink(
+                payload_offset,
+                entry.compressed_size,
+                compressed_scratch,
+                output_window,
+                inflate_scratch,
+                emit,
+            ),
+            _ => Err(ZipError::UnsupportedCompression),
+        }
+    }
+
+    fn inflate_entry_to_sink<F>(
+        &mut self,
+        payload_offset: u32,
+        compressed_size: u32,
+        input: &mut [u8],
+        output: &mut [u8],
+        inflate_scratch: &mut ZipInflateScratch,
+        mut emit: F,
+    ) -> Result<(), ZipError>
+    where
+        F: FnMut(&[u8]) -> Result<(), ZipError>,
+    {
+        if input.is_empty() || output.is_empty() {
+            return Err(ZipError::OutputTooSmall);
+        }
+        inflate_scratch.state.reset(DataFormat::Raw);
+        let mut compressed_read = 0u32;
+        let mut output_pos = 0usize;
+        while compressed_read < compressed_size {
+            let remaining = (compressed_size - compressed_read) as usize;
+            let input_len = input.len().min(remaining);
+            read_exact_at(
+                &mut self.reader,
+                payload_offset + compressed_read,
+                &mut input[..input_len],
+            )?;
+            compressed_read += input_len as u32;
+            let flush = if compressed_read == compressed_size {
+                MZFlush::Finish
+            } else {
+                MZFlush::None
+            };
+            let mut consumed = 0usize;
+            while consumed < input_len || flush == MZFlush::Finish {
+                if output_pos == output.len() {
+                    emit(&output[..output_pos])?;
+                    output_pos = 0;
+                }
+                let result = inflate(
+                    &mut inflate_scratch.state,
+                    &input[consumed..input_len],
+                    &mut output[output_pos..],
+                    flush,
+                );
+                consumed += result.bytes_consumed;
+                output_pos += result.bytes_written;
+                match result.status {
+                    Ok(MZStatus::StreamEnd) => {
+                        if output_pos > 0 {
+                            emit(&output[..output_pos])?;
+                        }
+                        return Ok(());
+                    }
+                    Ok(MZStatus::Ok) => {
+                        if result.bytes_consumed == 0 && result.bytes_written == 0 {
+                            break;
+                        }
+                        if consumed == input_len {
+                            break;
+                        }
+                    }
+                    Ok(_) => return Err(ZipError::Inflate),
+                    Err(_) => return Err(ZipError::Inflate),
+                }
+            }
+        }
+        if output_pos > 0 {
+            emit(&output[..output_pos])?;
+        }
+        Ok(())
     }
 
     fn inflate_entry_prefix(
@@ -1777,6 +2022,452 @@ fn push_pending_ncx_item(
     sink.push_toc(title, href, level.max(1))
 }
 
+// === Streaming TOC parsing ===
+//
+// The slice-based parsers above require the full NCX/nav file to fit in a
+// single RAM buffer. For books with large tables of contents (HPMOR's NCX is
+// 53 KB, well over the 24 KB XHTML scratch on the C3) that's a hard ceiling.
+// The streaming variants below consume bytes incrementally from a `ByteStream`
+// using a small XML tokenizer with bounded internal buffers, so peak memory is
+// a function of the longest single tag/title rather than the file size.
+
+const STREAM_TAG_BUF_BYTES: usize = 1024;
+const STREAM_TEXT_CHUNK_BYTES: usize = 256;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TocStreamError {
+    Tokenizer,
+    Toc(TocError),
+}
+
+impl From<TocError> for TocStreamError {
+    fn from(value: TocError) -> Self {
+        Self::Toc(value)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TokState {
+    Text,
+    Tag,
+    TagQuoted(u8),
+}
+
+enum TokEvent<'a> {
+    StartTag(&'a str),
+    EndTag(&'a str),
+    Text(&'a str),
+}
+
+/// Byte-level XML tokenizer. Emits StartTag/EndTag/Text events with all
+/// content held in bounded internal buffers — never borrows from the caller's
+/// input. Comments/PI/doctype tags are treated as opaque skip-until-`>` blocks,
+/// matching the imperfections (but bounded behaviour) of [`XmlCursor`].
+pub struct StreamingXmlTokenizer {
+    state: TokState,
+    tag_buf: heapless::String<STREAM_TAG_BUF_BYTES>,
+    text_buf: heapless::String<STREAM_TEXT_CHUNK_BYTES>,
+    tag_overflow: bool,
+}
+
+impl StreamingXmlTokenizer {
+    pub fn new() -> Self {
+        Self {
+            state: TokState::Text,
+            tag_buf: heapless::String::new(),
+            text_buf: heapless::String::new(),
+            tag_overflow: false,
+        }
+    }
+
+    pub fn feed_ncx(
+        &mut self,
+        bytes: &[u8],
+        parser: &mut NcxStreamParser,
+        sink: &mut impl EpubTocSink,
+    ) -> Result<(), TocStreamError> {
+        self.feed(bytes, &mut |event| parser.handle(event, sink))
+    }
+
+    pub fn finish_ncx(
+        &mut self,
+        parser: &mut NcxStreamParser,
+        sink: &mut impl EpubTocSink,
+    ) -> Result<(), TocStreamError> {
+        self.finish(&mut |event| parser.handle(event, sink))
+    }
+
+    pub fn feed_nav(
+        &mut self,
+        bytes: &[u8],
+        parser: &mut Epub3NavStreamParser,
+        sink: &mut impl EpubTocSink,
+    ) -> Result<(), TocStreamError> {
+        self.feed(bytes, &mut |event| parser.handle(event, sink))
+    }
+
+    pub fn finish_nav(
+        &mut self,
+        parser: &mut Epub3NavStreamParser,
+        sink: &mut impl EpubTocSink,
+    ) -> Result<(), TocStreamError> {
+        self.finish(&mut |event| parser.handle(event, sink))
+    }
+
+    fn feed<F>(&mut self, bytes: &[u8], emit: &mut F) -> Result<(), TocStreamError>
+    where
+        F: FnMut(TokEvent<'_>) -> Result<(), TocStreamError>,
+    {
+        for &byte in bytes {
+            self.consume(byte, emit)?;
+        }
+        Ok(())
+    }
+
+    fn finish<F>(&mut self, emit: &mut F) -> Result<(), TocStreamError>
+    where
+        F: FnMut(TokEvent<'_>) -> Result<(), TocStreamError>,
+    {
+        if matches!(self.state, TokState::Text) && !self.text_buf.is_empty() {
+            emit(TokEvent::Text(self.text_buf.as_str()))?;
+            self.text_buf.clear();
+        }
+        Ok(())
+    }
+
+    fn consume<F>(&mut self, byte: u8, emit: &mut F) -> Result<(), TocStreamError>
+    where
+        F: FnMut(TokEvent<'_>) -> Result<(), TocStreamError>,
+    {
+        match self.state {
+            TokState::Text => {
+                if byte == b'<' {
+                    if !self.text_buf.is_empty() {
+                        emit(TokEvent::Text(self.text_buf.as_str()))?;
+                        self.text_buf.clear();
+                    }
+                    self.state = TokState::Tag;
+                    self.tag_buf.clear();
+                    self.tag_overflow = false;
+                } else {
+                    self.push_text_byte(byte, emit)?;
+                }
+            }
+            TokState::Tag => {
+                if byte == b'>' {
+                    if !self.tag_overflow {
+                        let tag = self.tag_buf.as_str().trim();
+                        if !(tag.starts_with('!') || tag.starts_with('?')) {
+                            if let Some(name) = tag.strip_prefix('/') {
+                                emit(TokEvent::EndTag(name.trim()))?;
+                            } else if !tag.is_empty() {
+                                emit(TokEvent::StartTag(tag))?;
+                            }
+                        }
+                    }
+                    self.tag_buf.clear();
+                    self.tag_overflow = false;
+                    self.state = TokState::Text;
+                } else if byte == b'"' || byte == b'\'' {
+                    self.push_tag_byte(byte);
+                    self.state = TokState::TagQuoted(byte);
+                } else {
+                    self.push_tag_byte(byte);
+                }
+            }
+            TokState::TagQuoted(quote) => {
+                self.push_tag_byte(byte);
+                if byte == quote {
+                    self.state = TokState::Tag;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn push_tag_byte(&mut self, byte: u8) {
+        if self.tag_overflow {
+            return;
+        }
+        if self.tag_buf.push(byte as char).is_err() {
+            self.tag_overflow = true;
+        }
+    }
+
+    fn push_text_byte<F>(&mut self, byte: u8, emit: &mut F) -> Result<(), TocStreamError>
+    where
+        F: FnMut(TokEvent<'_>) -> Result<(), TocStreamError>,
+    {
+        if self.text_buf.push(byte as char).is_err() {
+            if !self.text_buf.is_empty() {
+                emit(TokEvent::Text(self.text_buf.as_str()))?;
+                self.text_buf.clear();
+            }
+            let _ = self.text_buf.push(byte as char);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NcxItemState {
+    Closed,
+    Open,
+    Pushed,
+}
+
+pub struct NcxStreamParser {
+    nav_depth: u8,
+    item: NcxItemState,
+    in_text: bool,
+    title: heapless::String<160>,
+    href: heapless::String<256>,
+    href_set: bool,
+}
+
+impl NcxStreamParser {
+    pub fn new() -> Self {
+        Self {
+            nav_depth: 0,
+            item: NcxItemState::Closed,
+            in_text: false,
+            title: heapless::String::new(),
+            href: heapless::String::new(),
+            href_set: false,
+        }
+    }
+
+    fn handle(
+        &mut self,
+        event: TokEvent<'_>,
+        sink: &mut impl EpubTocSink,
+    ) -> Result<(), TocStreamError> {
+        match event {
+            TokEvent::StartTag(tag) if tag_name_is(tag, "navPoint") => {
+                if matches!(self.item, NcxItemState::Open) {
+                    self.flush_to_sink(sink)?;
+                }
+                self.nav_depth = self.nav_depth.saturating_add(1);
+                self.item = NcxItemState::Open;
+                self.in_text = false;
+                self.title.clear();
+                self.href.clear();
+                self.href_set = false;
+            }
+            TokEvent::EndTag(tag) if tag_name_is(tag, "navPoint") => {
+                if matches!(self.item, NcxItemState::Open) {
+                    self.flush_to_sink(sink)?;
+                }
+                self.nav_depth = self.nav_depth.saturating_sub(1);
+                self.item = if self.nav_depth > 0 {
+                    NcxItemState::Open
+                } else {
+                    NcxItemState::Closed
+                };
+                self.in_text = false;
+                self.title.clear();
+                self.href.clear();
+                self.href_set = false;
+            }
+            TokEvent::StartTag(tag)
+                if matches!(self.item, NcxItemState::Open | NcxItemState::Pushed)
+                    && tag_name_is(tag, "text") =>
+            {
+                self.in_text = true;
+            }
+            TokEvent::EndTag(tag) if tag_name_is(tag, "text") => {
+                self.in_text = false;
+            }
+            TokEvent::StartTag(tag)
+                if matches!(self.item, NcxItemState::Open) && tag_name_is(tag, "content") =>
+            {
+                if let Some(src) = attr_value(tag, "src") {
+                    self.href.clear();
+                    let _ = push_str_bounded(&mut self.href, src);
+                    self.href_set = true;
+                }
+                if !self.title.as_str().trim().is_empty() && self.href_set {
+                    self.flush_to_sink(sink)?;
+                    self.item = NcxItemState::Pushed;
+                }
+            }
+            TokEvent::Text(text) if self.in_text => {
+                append_owned_text(&mut self.title, text);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn flush_to_sink(&mut self, sink: &mut impl EpubTocSink) -> Result<(), TocStreamError> {
+        let title = self.title.as_str().trim();
+        let href = self.href.as_str().trim();
+        if title.is_empty() || href.is_empty() {
+            return Ok(());
+        }
+        sink.push_toc(title, href, self.nav_depth.max(1))?;
+        Ok(())
+    }
+}
+
+pub struct Epub3NavStreamParser {
+    in_body: bool,
+    body_required: bool,
+    in_nav: bool,
+    list_depth: u8,
+    href: heapless::String<256>,
+    href_set: bool,
+    title: heapless::String<160>,
+    level: u8,
+}
+
+impl Epub3NavStreamParser {
+    pub fn new() -> Self {
+        Self {
+            in_body: true,
+            body_required: false,
+            in_nav: false,
+            list_depth: 0,
+            href: heapless::String::new(),
+            href_set: false,
+            title: heapless::String::new(),
+            level: 0,
+        }
+    }
+
+    fn handle(
+        &mut self,
+        event: TokEvent<'_>,
+        sink: &mut impl EpubTocSink,
+    ) -> Result<(), TocStreamError> {
+        match event {
+            TokEvent::StartTag(tag) if tag_name_is(tag, "body") => {
+                self.body_required = true;
+                self.in_body = true;
+            }
+            TokEvent::EndTag(tag) if tag_name_is(tag, "body") => {
+                self.in_body = false;
+            }
+            _ if self.body_required && !self.in_body => {}
+            TokEvent::StartTag(tag) if tag_name_is(tag, "nav") => self.in_nav = true,
+            TokEvent::EndTag(tag) if tag_name_is(tag, "nav") => self.in_nav = false,
+            TokEvent::StartTag(tag) if self.in_nav && tag_name_is(tag, "ol") => {
+                self.list_depth = self.list_depth.saturating_add(1);
+            }
+            TokEvent::EndTag(tag) if self.in_nav && tag_name_is(tag, "ol") => {
+                self.list_depth = self.list_depth.saturating_sub(1);
+            }
+            TokEvent::StartTag(tag) if self.in_nav && tag_name_is(tag, "a") => {
+                self.href.clear();
+                self.href_set = false;
+                if let Some(value) = attr_value(tag, "href") {
+                    let _ = push_str_bounded(&mut self.href, value);
+                    self.href_set = true;
+                }
+                self.title.clear();
+                self.level = self.list_depth.max(1);
+            }
+            TokEvent::Text(text) if self.href_set => {
+                append_owned_text(&mut self.title, text);
+            }
+            TokEvent::EndTag(tag) if self.href_set && tag_name_is(tag, "a") => {
+                let title = self.title.as_str().trim();
+                let href = self.href.as_str().trim();
+                if !title.is_empty() && !href.is_empty() {
+                    sink.push_toc(title, href, self.level)?;
+                }
+                self.title.clear();
+                self.href.clear();
+                self.href_set = false;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+fn push_str_bounded<const N: usize>(out: &mut heapless::String<N>, value: &str) -> Result<(), ()> {
+    for ch in value.chars() {
+        if out.push(ch).is_err() {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+/// Parse an EPUB 2 NCX directly from a byte stream into an [`EpubTocSink`].
+/// Memory use is bounded by the tokenizer's tag/text buffers; the whole file
+/// is never resident in RAM.
+pub fn parse_epub2_ncx_stream<R>(
+    reader: &mut R,
+    sink: &mut impl EpubTocSink,
+) -> Result<(), TocStreamError>
+where
+    R: ByteStream,
+{
+    let mut tokenizer = StreamingXmlTokenizer::new();
+    let mut parser = NcxStreamParser::new();
+    let mut buf = [0u8; 512];
+    loop {
+        let n = reader.read(&mut buf).map_err(|_| TocStreamError::Tokenizer)?;
+        if n == 0 {
+            break;
+        }
+        let bytes = &buf[..n];
+        tokenizer.feed(bytes, &mut |event| parser.handle(event, sink))?;
+    }
+    tokenizer.finish(&mut |event| parser.handle(event, sink))?;
+    Ok(())
+}
+
+/// Parse an EPUB 3 nav document directly from a byte stream.
+pub fn parse_epub3_nav_stream<R>(
+    reader: &mut R,
+    sink: &mut impl EpubTocSink,
+) -> Result<(), TocStreamError>
+where
+    R: ByteStream,
+{
+    let mut tokenizer = StreamingXmlTokenizer::new();
+    let mut parser = Epub3NavStreamParser::new();
+    let mut buf = [0u8; 512];
+    loop {
+        let n = reader.read(&mut buf).map_err(|_| TocStreamError::Tokenizer)?;
+        if n == 0 {
+            break;
+        }
+        let bytes = &buf[..n];
+        tokenizer.feed(bytes, &mut |event| parser.handle(event, sink))?;
+    }
+    tokenizer.finish(&mut |event| parser.handle(event, sink))?;
+    Ok(())
+}
+
+/// Slice-backed [`ByteStream`] used by tests and the slice-based parser
+/// wrappers below.
+pub struct SliceByteStream<'a> {
+    bytes: &'a [u8],
+    cursor: usize,
+}
+
+impl<'a> SliceByteStream<'a> {
+    pub fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, cursor: 0 }
+    }
+}
+
+impl ByteStream for SliceByteStream<'_> {
+    type Error = ();
+
+    fn read(&mut self, out: &mut [u8]) -> Result<usize, Self::Error> {
+        let remaining = self.bytes.len().saturating_sub(self.cursor);
+        let take = remaining.min(out.len());
+        out[..take].copy_from_slice(&self.bytes[self.cursor..self.cursor + take]);
+        self.cursor += take;
+        Ok(take)
+    }
+}
+
 pub fn parse_css_text_align(css: &str, rules: &mut CssRules) {
     let mut cursor = 0usize;
     while let Some(open_rel) = css[cursor..].find('{') {
@@ -2848,6 +3539,172 @@ mod tests {
         assert_eq!(sink.items[1].0.as_str(), "Part A");
         assert_eq!(sink.items[1].2, 2);
         assert_eq!(sink.items[2].0.as_str(), "The Machine");
+    }
+
+    #[test]
+    fn epub2_ncx_stream_matches_slice_parser() {
+        struct CountingSink(Vec<(heapless::String<64>, heapless::String<64>, u8), 256>);
+        impl EpubTocSink for CountingSink {
+            fn push_toc(&mut self, title: &str, href: &str, level: u8) -> Result<(), TocError> {
+                let mut t = heapless::String::<64>::new();
+                let mut h = heapless::String::<64>::new();
+                let _ = t.push_str(title);
+                let _ = h.push_str(href);
+                self.0.push((t, h, level)).map_err(|_| TocError::TooManyItems)
+            }
+        }
+
+        let ncx = r#"<?xml version='1.0' encoding='utf-8'?>
+            <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+              <head><meta name="dtb:uid" content="x"/></head>
+              <navMap>
+                <navPoint><navLabel><text>Introduction</text></navLabel><content src="chapter1.xhtml"/>
+                  <navPoint><navLabel><text>Part A</text></navLabel><content src="chapter1.xhtml#a"/></navPoint>
+                </navPoint>
+                <navPoint><navLabel><text>The Machine</text></navLabel><content src="chapter2.xhtml"/></navPoint>
+              </navMap>
+            </ncx>"#;
+
+        let mut slice_sink = CountingSink(Vec::new());
+        parse_epub2_ncx_to_sink(ncx, &mut slice_sink).expect("slice parses");
+
+        let mut stream = SliceByteStream::new(ncx.as_bytes());
+        let mut stream_sink = CountingSink(Vec::new());
+        parse_epub2_ncx_stream(&mut stream, &mut stream_sink).expect("stream parses");
+
+        assert_eq!(slice_sink.0.len(), stream_sink.0.len());
+        for (a, b) in slice_sink.0.iter().zip(stream_sink.0.iter()) {
+            assert_eq!(a.0.as_str(), b.0.as_str());
+            assert_eq!(a.1.as_str(), b.1.as_str());
+            assert_eq!(a.2, b.2);
+        }
+    }
+
+    #[test]
+    fn epub3_nav_stream_matches_slice_parser() {
+        struct CountingSink(Vec<(heapless::String<64>, heapless::String<64>, u8), 16>);
+        impl EpubTocSink for CountingSink {
+            fn push_toc(&mut self, title: &str, href: &str, level: u8) -> Result<(), TocError> {
+                let mut t = heapless::String::<64>::new();
+                let mut h = heapless::String::<64>::new();
+                let _ = t.push_str(title);
+                let _ = h.push_str(href);
+                self.0.push((t, h, level)).map_err(|_| TocError::TooManyItems)
+            }
+        }
+
+        let nav = r#"
+            <html><body>
+              <nav epub:type="toc"><ol>
+                <li><a href="chapter1.xhtml#start">Introduction</a></li>
+                <li><a href="chapter2.xhtml">The Machine</a>
+                  <ol><li><a href="chapter2.xhtml#part">A room</a></li></ol>
+                </li>
+              </ol></nav>
+            </body></html>
+        "#;
+
+        let mut slice_sink = CountingSink(Vec::new());
+        parse_epub3_nav_to_sink(nav, &mut slice_sink).expect("slice parses");
+
+        let mut stream = SliceByteStream::new(nav.as_bytes());
+        let mut stream_sink = CountingSink(Vec::new());
+        parse_epub3_nav_stream(&mut stream, &mut stream_sink).expect("stream parses");
+
+        assert_eq!(slice_sink.0.len(), stream_sink.0.len());
+        for (a, b) in slice_sink.0.iter().zip(stream_sink.0.iter()) {
+            assert_eq!(a.0.as_str(), b.0.as_str());
+            assert_eq!(a.1.as_str(), b.1.as_str());
+            assert_eq!(a.2, b.2);
+        }
+    }
+
+    #[test]
+    fn epub2_ncx_stream_handles_ncx_larger_than_any_scratch_buffer() {
+        // Build a synthetic NCX with 200 chapters of descriptive titles —
+        // roughly 60 KB of XML, comfortably larger than any realistic in-RAM
+        // scratch on the device. The streaming parser should still surface
+        // every entry because peak memory is bounded by a single tag/title,
+        // not the file size.
+        use core::fmt::Write as _;
+        let mut xml = std::string::String::from(
+            "<?xml version='1.0' encoding='utf-8'?><ncx><navMap>",
+        );
+        for index in 0..200 {
+            write!(
+                xml,
+                "<navPoint><navLabel><text>Chapter {:03}: The Long Title That Inflates File Size</text></navLabel><content src=\"chapter_{:03}.xhtml\"/></navPoint>",
+                index, index
+            )
+            .unwrap();
+        }
+        xml.push_str("</navMap></ncx>");
+        assert!(xml.len() > 24 * 1024, "fixture must exceed XHTML scratch");
+
+        struct Sink {
+            count: usize,
+            last_title: heapless::String<128>,
+        }
+        impl EpubTocSink for Sink {
+            fn push_toc(&mut self, title: &str, _href: &str, _level: u8) -> Result<(), TocError> {
+                self.last_title.clear();
+                let _ = self.last_title.push_str(title);
+                self.count += 1;
+                Ok(())
+            }
+        }
+
+        let mut stream = SliceByteStream::new(xml.as_bytes());
+        let mut sink = Sink {
+            count: 0,
+            last_title: heapless::String::new(),
+        };
+        parse_epub2_ncx_stream(&mut stream, &mut sink).expect("large ncx parses");
+
+        assert_eq!(sink.count, 200);
+        assert!(sink.last_title.as_str().starts_with("Chapter 199"));
+    }
+
+    #[test]
+    fn epub2_ncx_stream_survives_tiny_read_chunks() {
+        struct CountingSink(usize);
+        impl EpubTocSink for CountingSink {
+            fn push_toc(&mut self, _t: &str, _h: &str, _l: u8) -> Result<(), TocError> {
+                self.0 += 1;
+                Ok(())
+            }
+        }
+
+        // Read one byte at a time to exercise tag-spanning-chunk-boundary.
+        struct OneByteStream<'a> {
+            bytes: &'a [u8],
+            cursor: usize,
+        }
+        impl ByteStream for OneByteStream<'_> {
+            type Error = ();
+            fn read(&mut self, out: &mut [u8]) -> Result<usize, Self::Error> {
+                if self.cursor >= self.bytes.len() || out.is_empty() {
+                    return Ok(0);
+                }
+                out[0] = self.bytes[self.cursor];
+                self.cursor += 1;
+                Ok(1)
+            }
+        }
+
+        let ncx = r#"<ncx><navMap>
+            <navPoint><navLabel><text>One</text></navLabel><content src="a.xhtml"/></navPoint>
+            <navPoint><navLabel><text>Two</text></navLabel><content src="b.xhtml"/></navPoint>
+            <navPoint><navLabel><text>Three</text></navLabel><content src="c.xhtml"/></navPoint>
+        </navMap></ncx>"#;
+
+        let mut stream = OneByteStream {
+            bytes: ncx.as_bytes(),
+            cursor: 0,
+        };
+        let mut sink = CountingSink(0);
+        parse_epub2_ncx_stream(&mut stream, &mut sink).expect("byte-by-byte parses");
+        assert_eq!(sink.0, 3);
     }
 
     #[test]

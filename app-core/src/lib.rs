@@ -4,7 +4,7 @@
 use display::{epd::RefreshMode, Rect};
 
 pub const SETTINGS_ITEMS: u8 = 3;
-pub const MAX_SD_CHAPTERS: usize = 64;
+pub const MAX_SD_CHAPTERS: usize = 128;
 pub const FIRST_SD_BOOK_ID: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -859,6 +859,26 @@ mod tests {
 
         assert_eq!(state.page, 12);
         assert_eq!(state.chapter, 1);
+    }
+
+    #[test]
+    fn sd_page_navigation_tracks_chapters_past_first_screen() {
+        let mut state = ReaderState::boot();
+        state.view = AppView::Reading;
+        state.book_id = ReaderSource::sd(0).book_id();
+        state.sd_page_count = 400;
+        state.sd_chapter_count = 40;
+        for index in 0..40 {
+            state.sd_chapter_pages[index] = (index as u16) * 10;
+        }
+        state.page = 249;
+        state.chapter = 23;
+
+        let state = press(state, Button::Next);
+
+        assert_eq!(state.page, 250);
+        assert_eq!(state.chapter, 25);
+        assert_eq!(state.selection, 25);
     }
 
     #[test]
