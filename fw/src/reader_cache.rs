@@ -21,6 +21,7 @@ use proto::epub::{
     TocError, XhtmlBlockSink, XhtmlError, ZipInflateScratch, ZipStream, MAX_ENTRY_NAME_BYTES,
 };
 use proto::text::{TextAlign, TextRole};
+use ui::reading::StyledInkCursor;
 
 pub(crate) const READER_TAIL_SCRATCH: usize = 4096;
 pub(crate) const READER_HEADER_SCRATCH: usize = 46;
@@ -628,6 +629,7 @@ where
             book_partial: &mut book_partial,
             spine_index: spine_index.min(u16::MAX as usize) as u16,
             line: String::new(),
+            line_ink: StyledInkCursor::new(literata(FontStyle::Regular)),
             line_role: TextRole::Body,
             line_align: TextAlign::Justify,
             line_style: FontStyle::Regular,
@@ -989,6 +991,10 @@ struct LibraryBlockSink<
     book_partial: &'a mut bool,
     spine_index: u16,
     line: String<MAX_READER_BLOCK_TEXT>,
+    /// Running ink width of `line`. `line` always starts with a style
+    /// marker (or is empty), so the cursor's default font never shows
+    /// through and the running width matches a from-scratch measure.
+    line_ink: StyledInkCursor,
     line_role: TextRole,
     line_align: TextAlign,
     line_style: FontStyle,
@@ -1172,7 +1178,6 @@ fn push_styled_preview_fragment<
 
     normalize_decorative_separator(&mut normalized);
     let align = block_align_for(align, normalized.as_str(), role);
-    let font = literata(style);
     let x = reader_layout::reader_x_for(role);
     let max_x = reader_layout::READER_RIGHT_X;
 
@@ -1188,13 +1193,17 @@ fn push_styled_preview_fragment<
     let mut first_word = true;
     for word in normalized.split_whitespace() {
         let attach = is_leading_punctuation_word(word) && !sink.line.is_empty();
-        let mut candidate = sink.line.clone();
         let leading_space = !sink.line.is_empty()
             && !attach
             && (sink.pending_space || !first_word || starts_with_space);
-        if append_styled_word(&mut candidate, word, style, leading_space).is_err() {
+        let kept_len = sink.line.len();
+        let kept_ink = sink.line_ink;
+        let line_was_empty = sink.line.is_empty();
+        if append_styled_word(&mut sink.line, word, style, leading_space).is_err() {
+            sink.line.truncate(kept_len);
             flush_styled_preview_line(sink, false);
             let _ = append_styled_word(&mut sink.line, word, style, false);
+            sink.line_ink.push_str(sink.line.as_str());
             sink.line_role = role;
             sink.line_align = align;
             sink.line_style = style;
@@ -1202,21 +1211,21 @@ fn push_styled_preview_fragment<
             first_word = false;
             continue;
         }
+        sink.line_ink.push_str(&sink.line[kept_len..]);
 
-        if !sink.line.is_empty()
-            && reader_layout::styled_text_ink_width(candidate.as_str(), font)
-                + x
-                + reader_layout::READER_WRAP_SAFETY
-                > max_x
+        if !line_was_empty
+            && sink.line_ink.width() + x + reader_layout::READER_WRAP_SAFETY > max_x
         {
+            sink.line.truncate(kept_len);
+            sink.line_ink = kept_ink;
             flush_styled_preview_line(sink, false);
             let _ = append_styled_word(&mut sink.line, word, style, false);
+            sink.line_ink.push_str(sink.line.as_str());
             sink.line_role = role;
             sink.line_align = align;
             sink.line_style = style;
             sink.pending_space = false;
         } else {
-            sink.line = candidate;
             sink.line_role = role;
             sink.line_align = align;
             sink.line_style = style;
@@ -1303,6 +1312,7 @@ fn flush_styled_preview_line<
         sink.spine_index,
     );
     sink.line.clear();
+    sink.line_ink = StyledInkCursor::new(literata(FontStyle::Regular));
     sink.line_style = FontStyle::Regular;
     sink.pending_space = false;
 }
