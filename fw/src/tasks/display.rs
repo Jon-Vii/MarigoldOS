@@ -16,9 +16,15 @@ use display::epd::RefreshMode;
 use display::fb::Framebuffer;
 use display::BAND_BYTES;
 use embassy_futures::select::{select, Either};
+use embassy_time::Instant;
 use esp_hal::gpio::Output;
 use hal_ext::nvm::AppStateRecord;
 use static_cell::ConstStaticCell;
+
+/// Same-book page-turn progress is coalesced: at most one STATE.BIN write
+/// per this interval, with a guaranteed flush before display sleep. A
+/// battery pull can lose at most this many seconds of reading position.
+const PROGRESS_WRITE_MIN_SECS: u64 = 15;
 
 static EPUB_TAIL: ConstStaticCell<[u8; READER_TAIL_SCRATCH]> =
     ConstStaticCell::new([0; READER_TAIL_SCRATCH]);
@@ -51,6 +57,8 @@ pub async fn run(mut epd: Epd, mut sd_cs: Output<'static>) {
     let tx_band = TX_BAND.init([0; BAND_BYTES]);
     let mut epub_scratch = None;
     let mut refresh_planner = RefreshPlanner::new();
+    let mut pending_progress: Option<AppStateRecord> = None;
+    let mut last_progress_write: Option<Instant> = None;
     static SD_LIBRARY: ConstStaticCell<ReaderStore> = ConstStaticCell::new(ReaderStore::new());
     let sd_library = SD_LIBRARY.take();
 
@@ -101,6 +109,12 @@ pub async fn run(mut epd: Epd, mut sd_cs: Output<'static>) {
                 }
             }
             Either::First(DisplayCommand::Sleep) => {
+                flush_pending_progress(
+                    &mut epd,
+                    &mut sd_cs,
+                    &mut pending_progress,
+                    &mut last_progress_write,
+                );
                 if let Some(request) = refresh_planner.last_request() {
                     crate::views::render_sleep(fb, request, sd_library);
                     let _ = display_flush::flush(
@@ -131,6 +145,8 @@ pub async fn run(mut epd: Epd, mut sd_cs: Output<'static>) {
                     &mut sd_cs,
                     sd_library,
                     &mut epub_scratch,
+                    &mut pending_progress,
+                    &mut last_progress_write,
                 );
             }
         }
@@ -146,12 +162,15 @@ pub(crate) fn send_library_event(event: LibraryEvent) {
 /// Kept out of line so the task loop's poll frame stays small; the storage
 /// arms below carry multi-KB scratch and run near the stack floor.
 #[inline(never)]
+#[allow(clippy::too_many_arguments)]
 fn handle_storage_command(
     command: StorageCommand,
     epd: &mut Epd,
     sd_cs: &mut Output<'static>,
     sd_library: &mut ReaderStore,
     epub_scratch: &mut Option<&'static mut ReaderCacheScratch<'static>>,
+    pending_progress: &mut Option<AppStateRecord>,
+    last_progress_write: &mut Option<Instant>,
 ) {
     match command {
         StorageCommand::LoadCatalogCache => {
@@ -244,20 +263,41 @@ fn handle_storage_command(
         }
         StorageCommand::StoreProgress(record) => {
             let (source_hash, source_size) = source_identity(sd_library, record.book_id);
-            reader_cache::store_app_state(
-                epd,
-                sd_cs,
-                AppStateRecord {
-                    book_id: record.book_id,
-                    chapter: record.chapter,
-                    screen: record.screen,
-                    shell_orientation: record.shell_orientation,
-                    reading_orientation: record.reading_orientation,
-                    refresh_policy: record.refresh_policy,
-                    source_hash,
-                    source_size,
-                },
-            );
+            let record = AppStateRecord {
+                book_id: record.book_id,
+                chapter: record.chapter,
+                screen: record.screen,
+                shell_orientation: record.shell_orientation,
+                reading_orientation: record.reading_orientation,
+                refresh_policy: record.refresh_policy,
+                source_hash,
+                source_size,
+            };
+            // Coalesce same-context page turns; anything beyond the screen
+            // number changing (book, chapter, orientation, policy) is rare
+            // and worth landing immediately, after first preserving the
+            // previous context's pending position.
+            let context_changed = pending_progress
+                .map(|pending| {
+                    AppStateRecord {
+                        screen: record.screen,
+                        ..pending
+                    } != record
+                })
+                .unwrap_or(false);
+            let due = last_progress_write
+                .map(|written| written.elapsed().as_secs() >= PROGRESS_WRITE_MIN_SECS)
+                .unwrap_or(true);
+            if context_changed {
+                flush_pending_progress(epd, sd_cs, pending_progress, last_progress_write);
+            }
+            if context_changed || due {
+                reader_cache::store_app_state(epd, sd_cs, record);
+                *pending_progress = None;
+                *last_progress_write = Some(Instant::now());
+            } else {
+                *pending_progress = Some(record);
+            }
         }
     }
 }
@@ -327,4 +367,16 @@ fn ensure_epub_scratch<'a>(
 
 fn source_identity(library: &ReaderStore, book_id: u32) -> (u32, u32) {
     library.source_identity(book_id)
+}
+
+fn flush_pending_progress(
+    epd: &mut Epd,
+    sd_cs: &mut Output<'static>,
+    pending_progress: &mut Option<AppStateRecord>,
+    last_progress_write: &mut Option<Instant>,
+) {
+    if let Some(record) = pending_progress.take() {
+        reader_cache::store_app_state(epd, sd_cs, record);
+        *last_progress_write = Some(Instant::now());
+    }
 }
