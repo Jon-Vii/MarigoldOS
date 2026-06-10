@@ -158,6 +158,9 @@ pub(crate) enum SdSessionError {
     Root,
 }
 
+/// Kept out of line: the VolumeManager/SdCard session state is multi-KB
+/// and must not be pooled into every caller's frame.
+#[inline(never)]
 pub(crate) fn with_root<R>(
     epd: &mut Epd,
     sd_cs: &mut Output<'static>,

@@ -55,6 +55,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32};
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
+use esp_backtrace as _;
 use esp_hal::analog::adc::{Adc, AdcCalCurve, AdcConfig, Attenuation};
 use esp_hal::dma::{Dma, DmaPriority};
 use esp_hal::entry;

@@ -143,6 +143,9 @@ pub(crate) fn send_library_event(event: LibraryEvent) {
     }
 }
 
+/// Kept out of line so the task loop's poll frame stays small; the storage
+/// arms below carry multi-KB scratch and run near the stack floor.
+#[inline(never)]
 fn handle_storage_command(
     command: StorageCommand,
     epd: &mut Epd,
@@ -279,6 +282,10 @@ fn send_required_display_event(event: DisplayEvent) {
     }
 }
 
+/// Kept out of line: first-call initialization moves a multi-KB scratch
+/// value into the static; that spike must not sit at the base of the EPUB
+/// open call chain's frame.
+#[inline(never)]
 fn ensure_epub_scratch<'a>(
     epub_scratch: &'a mut Option<&'static mut ReaderCacheScratch<'static>>,
 ) -> &'a mut ReaderCacheScratch<'static> {

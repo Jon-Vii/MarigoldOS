@@ -14,6 +14,7 @@ const CATALOG_HEADER_BYTES: usize = 8;
 const CATALOG_RECORD_BYTES: usize = 92;
 const LEGACY_CACHE_MIGRATION_ENABLED: bool = false;
 
+#[inline(never)]
 pub(crate) fn scan_books(epd: &mut Epd, sd_cs: &mut Output<'static>, library: &mut ReaderStore) {
     esp_println::println!("sd: scan start");
     library.status = LibraryScanStatus::Scanning;
@@ -85,6 +86,7 @@ fn migrate_reader_cache<
     }
 }
 
+#[inline(never)]
 pub(crate) fn load_catalog_cache(
     epd: &mut Epd,
     sd_cs: &mut Output<'static>,
