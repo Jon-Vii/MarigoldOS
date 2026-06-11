@@ -117,7 +117,8 @@ wifi_task
   requests StorageCommand::LoanSyncMemory, receives the dismantled EPUB
   scratch as radio heap, joins Wi-Fi in STA mode, exchanges the active
   book's position with a kosync server, reports SyncEvents to app_task
-  SyncCommand::Exit ends the session with a software reset
+  then serves the browser shelf page at the device's LAN address
+  SyncCommand::Exit (the done press) ends the session with a software reset
 ```
 
 ## Wi-Fi sync session
@@ -143,6 +144,22 @@ pulled position lands through the still-working `StoreProgress` path so it
 survives the session-ending reset. `proto::kosync` holds the sans-IO
 protocol pieces (MD5, partial digest, HTTP request building and response
 parsing) with host tests.
+
+The session does not reset right after the kosync exchange: the wifi task
+keeps serving a shelf page at the device's LAN address (the Sync screen's
+`Serving` status hands out the URL, with Confirm as the done key). The
+page lists the catalog, shows real upload progress, and offers per-book
+removal. Routes: `GET /` serves the page, `GET /list` returns the catalog
+snapshot shipped with the loan, `POST /upload?name=` streams raw EPUB
+bytes, and `POST /delete?name=` removes a book (card-root entries carry
+`root=1`; uploads always land in /BOOKS). Upload bytes reach the display
+task — still the single SD owner — through `fw::upload`'s two-buffer
+ping-pong: 4 KB chunks carry loaned buffers one way and the buffers come
+back on a return channel once written. The display task holds one SD
+session for the whole upload phase and writes `/BOOKS/<8.3>.EPU` (the
+catalog scan accepts `.epu` alongside `.epub`). The done press waits for
+any in-flight upload before the session-ending reset; the boot rescan
+then surfaces the new books.
 
 Station credentials come from `/XTEINK/WIFI.BIN` (written by the
 onboarding portal below), falling back to compile-time `option_env!`

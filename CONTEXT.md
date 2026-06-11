@@ -35,14 +35,16 @@ Use this term for the deepened pagination/rendering seam that firmware reading v
 ### Sync session
 
 The one-way Wi-Fi mode that exchanges reading progress with a kosync
-server. Entering it loans the EPUB scratch (plus the dram2 segment) to the
-radio as heap, so the reader pipeline is gone until the session ends in a
-software reset. The display task keeps serving renders and progress writes
-during the session; it refuses every scratch-using storage command.
+server, then keeps serving the browser shelf page (catalog listing, EPUB
+upload, book removal) until the done press. Entering it loans the EPUB
+scratch (plus the dram2 segment) to the radio as heap, so the reader
+pipeline is gone until the session ends in a software reset. The display
+task keeps serving renders, progress writes, and upload writes during the
+session; it refuses every scratch-using storage command.
 
 Use this term for the wifi task's lifecycle. Keep kosync protocol encoding
-(`proto::kosync`) and the memory loan plumbing (`fw::sync_mem`) out of
-radio and UI language.
+(`proto::kosync`), the memory loan plumbing (`fw::sync_mem`), and the
+upload streaming plumbing (`fw::upload`) out of radio and UI language.
 
 ### Refresh plan
 
