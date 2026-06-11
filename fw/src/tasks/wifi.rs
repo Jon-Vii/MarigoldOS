@@ -266,9 +266,9 @@ const UPLOAD_PAGE: &str = concat!(
     r##"const span=document.createElement('span');span.textContent=label;"##,
     r##"li.appendChild(span);return li}"##,
     r##"async function load(){let text=null;"##,
-    r##"for(let i=0;i<5&&text===null;i++){try{"##,
+    r##"for(let i=0;i<10&&text===null;i++){try{"##,
     r##"const r=await fetch('/list');if(r.ok)text=await r.text();}"##,
-    r##"catch(e){}if(text===null)await new Promise(d=>setTimeout(d,600))}"##,
+    r##"catch(e){}if(text===null)await new Promise(d=>setTimeout(d,800))}"##,
     r##"if(text===null){shelf.textContent='';"##,
     r##"shelf.appendChild(row('— the card did not answer —'));return}"##,
     r##"shelf.textContent='';"##,
@@ -277,11 +277,12 @@ const UPLOAD_PAGE: &str = concat!(
     r##"if(!lines.length){shelf.appendChild(row('— nothing yet —'))}"##,
     r##"for(const line of lines){const[flag,open,label]=line.split('|');"##,
     r##"const li=row(label||open);"##,
-    r##"if(flag==='B'){const a=document.createElement('a');a.className='del';"##,
+    r##"const a=document.createElement('a');a.className='del';"##,
     r##"a.textContent='remove';a.onclick=async()=>{"##,
     r##"if(!confirm('Remove '+(label||open)+' from the card?'))return;"##,
-    r##"const r=await fetch('/delete?name='+encodeURIComponent(open),"##,
-    r##"{method:'POST'});if(r.ok)li.remove()};li.appendChild(a)}"##,
+    r##"const r=await fetch('/delete?name='+encodeURIComponent(open)+"##,
+    r##"(flag==='R'?'&root=1':''),"##,
+    r##"{method:'POST'});if(r.ok)li.remove()};li.appendChild(a);"##,
     r##"shelf.appendChild(li)}}"##,
     r##"function send(files){[...files].reduce((chain,f)=>chain.then(()=>new Promise(done=>{"##,
     r##"const li=row(f.name);const bar=document.createElement('progress');"##,
@@ -375,17 +376,26 @@ async fn upload_server(
                 core::str::from_utf8(&catalog[..catalog_len.min(catalog.len())]).unwrap_or("");
             let _ = write_http_response(&mut socket, "200 OK", listing).await;
         } else if is_delete {
-            let name = request_buf
-                .get(path_at..path_at + path_len)
+            let path_bytes = request_buf.get(path_at..path_at + path_len);
+            let name = path_bytes
                 .and_then(raw_query_name)
                 .and_then(valid_short_name);
+            let in_books = path_bytes
+                .map(|p| !window_contains(p, b"root=1"))
+                .unwrap_or(true);
             let ok = match name {
                 Some(name) => {
                     if !session_started {
                         STORAGE_COMMANDS.send(StorageCommand::ReceiveUpload).await;
                         session_started = true;
                     }
-                    UPLOAD_BEGINS.send(UploadBegin { name, delete: true }).await;
+                    UPLOAD_BEGINS
+                        .send(UploadBegin {
+                            name,
+                            delete: true,
+                            in_books,
+                        })
+                        .await;
                     UPLOAD_RESULTS.receive().await
                 }
                 None => false,
@@ -451,6 +461,7 @@ async fn stream_book(
         .send(UploadBegin {
             name,
             delete: false,
+            in_books: true,
         })
         .await;
 
@@ -727,6 +738,10 @@ async fn handle_portal_request(request: &captive::HttpRequest<'_>) -> bool {
     true
 }
 
+fn window_contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
 /// Raw (undecoded) `name=` value from a path's query string.
 fn raw_query_name(path: &[u8]) -> Option<&[u8]> {
     let query_at = path.iter().position(|byte| *byte == b'?')? + 1;
@@ -778,7 +793,7 @@ async fn write_http_response(
     write_all(socket, status.as_bytes()).await?;
     write_all(
         socket,
-        b"\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: ",
+        b"\r\ncache-control: no-store\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: ",
     )
     .await?;
     write_all(socket, &length[at..]).await?;

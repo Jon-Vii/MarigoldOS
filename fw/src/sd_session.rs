@@ -305,7 +305,11 @@ pub(crate) async fn upload_session(epd: &mut Epd, sd_cs: &mut Output<'static>) -
     loop {
         let begin = UPLOAD_BEGINS.receive().await;
         let ok = if begin.delete {
-            books.delete_file_in_dir(begin.name.as_str()).is_ok()
+            if begin.in_books {
+                books.delete_file_in_dir(begin.name.as_str()).is_ok()
+            } else {
+                root.delete_file_in_dir(begin.name.as_str()).is_ok()
+            }
         } else {
             write_one_book(&books, &begin).await
         };

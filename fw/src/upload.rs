@@ -19,8 +19,11 @@ pub type UploadName = String<12>;
 
 pub struct UploadBegin {
     pub name: UploadName,
-    /// True removes the named book from /BOOKS instead of writing one.
+    /// True removes the named book instead of writing one.
     pub delete: bool,
+    /// Whether the name lives in /BOOKS (uploads always do; deletions
+    /// follow the catalog's location flag).
+    pub in_books: bool,
 }
 
 pub struct UploadChunk {
