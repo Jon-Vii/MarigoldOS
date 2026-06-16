@@ -25,6 +25,10 @@ const KEY_DASH_X: i16 = 10;
 const KEY_LABEL_X: i16 = 40;
 const CONTENT_X: i16 = 210;
 const CONTENT_RIGHT: i16 = 740;
+/// The chapter colophon is a single line with nothing to its right on that row,
+/// so it may run past the wrapped-title content column out to the panel margin
+/// (matching the centered sleep colophon's edge) before a long name truncates.
+const COLOPHON_RIGHT: i16 = 760;
 const HEADING_CX: i16 = 480;
 const ROW_STEP: i16 = 56;
 const FIRST_ROW_Y: i16 = 118;
@@ -101,7 +105,7 @@ fn render_home(fb: &mut Framebuffer, shell: &UiShell<'_>) {
         shell.chapter_title,
         CONTENT_X,
         312,
-        CONTENT_RIGHT - CONTENT_X,
+        COLOPHON_RIGHT - CONTENT_X,
     );
 
     draw_battery_percent(fb, shell.battery_percent);
