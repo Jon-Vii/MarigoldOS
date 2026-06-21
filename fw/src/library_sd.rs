@@ -47,6 +47,10 @@ pub(crate) fn scan_books(epd: &mut Epd, sd_cs: &mut Output<'static>, library: &m
             Ok(0) => LibraryScanStatus::Empty,
             Ok(count) => {
                 esp_println::println!("sd: catalog written, {} epub(s)", count);
+                // Drop the cached data of books no longer on the card before
+                // reloading the window: this is the one moment the full book
+                // set is known and the catalog is fresh.
+                sweep_orphan_caches(root);
                 // Reload the header count + the first list window from the file
                 // we just wrote, so the streaming readers and the store agree.
                 let _ = read_catalog_window(root, library, 0);
@@ -513,6 +517,66 @@ pub(crate) fn find_index_by_identity(
     })
     .ok()
     .flatten()
+}
+
+/// Empty every book cache under CACHE2 whose book is no longer in the freshly
+/// written catalog -- the orphans left when a book is deleted (through the shelf
+/// or by pulling the card). Each cache is matched by its stored source identity,
+/// not its key name, so a live book's cache is never swept. Reading position
+/// lives in the global STATE.BIN and is untouched. Bounded per pass; any excess
+/// is handled by the next scan.
+fn sweep_orphan_caches<
+    D,
+    T,
+    const MAX_DIRS: usize,
+    const MAX_FILES: usize,
+    const MAX_VOLUMES: usize,
+>(
+    root: &Directory<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
+) where
+    D: embedded_sdmmc::BlockDevice,
+    T: TimeSource,
+{
+    use core::fmt::Write;
+    const SWEEP_MAX_PER_PASS: usize = 48;
+    // Collect cache-dir names up front: embedded-sdmmc forbids opening files
+    // while a directory iteration holds the lock.
+    let mut keys: heapless::Vec<String<8>, SWEEP_MAX_PER_PASS> = heapless::Vec::new();
+    if let Ok(xteink) = root.open_dir(proto::cache::CACHE_ROOT_DIR) {
+        if let Ok(cache) = xteink.open_dir(proto::cache::CACHE_V2_DIR) {
+            let _ = cache.iterate_dir(|entry| {
+                if !entry.attributes.is_directory() {
+                    return;
+                }
+                let mut name = String::<8>::new();
+                let _ = write!(name, "{}", entry.name);
+                if name.is_empty() || name.as_str() == "." || name.as_str() == ".." {
+                    return;
+                }
+                // Past capacity silently drops; the leftover keys sweep next scan.
+                let _ = keys.push(name);
+            });
+        }
+    }
+    let mut swept = 0u32;
+    for key in &keys {
+        let header = crate::reader_cache_files::read_cache_header(root, key.as_str());
+        // A readable cache that still maps to a catalog book stays. Anything
+        // else -- no book, or an unreadable BOOK.BIN -- is reclaimed.
+        let live = header
+            .as_ref()
+            .map(|h| find_in_catalog(root, h.source_hash, h.source_size, None).is_some())
+            .unwrap_or(false);
+        if live {
+            continue;
+        }
+        let section_count = header.map(|h| h.section_count).unwrap_or(0);
+        crate::reader_cache_files::empty_cache_dir(root, key.as_str(), section_count);
+        swept += 1;
+    }
+    if swept > 0 {
+        esp_println::println!("cache: swept {} orphan cache(s)", swept);
+    }
 }
 
 /// Stream the whole catalog into the browser shelf buffer as

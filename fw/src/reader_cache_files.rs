@@ -615,6 +615,71 @@ pub(crate) fn delete_upload_label<
     let _ = labels.delete_file_in_dir(file_name.as_str());
 }
 
+/// Read a book cache's v2 header (for its stored source identity and section
+/// count), or None when the cache has no readable BOOK.BIN. Used by the orphan
+/// sweep to decide whether a cache still belongs to a book on the card.
+pub(crate) fn read_cache_header<
+    D,
+    T,
+    const MAX_DIRS: usize,
+    const MAX_FILES: usize,
+    const MAX_VOLUMES: usize,
+>(
+    root: &Directory<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
+    key: &str,
+) -> Option<BookV2Header>
+where
+    D: embedded_sdmmc::BlockDevice,
+    T: TimeSource,
+{
+    with_v2_book_file(root, key, Mode::ReadOnly, |file| {
+        let mut header_bytes = [0u8; BOOK_V2_HEADER_BYTES];
+        read_exact_file(file, &mut header_bytes).ok()?;
+        decode_book_v2_header(&header_bytes).ok()
+    })
+    .flatten()
+}
+
+/// Delete the data files of one book cache: every section file, plus BOOK/TOC/
+/// COVER. embedded-sdmmc 0.9 can't remove directories, so the empty `<key>/`
+/// and `SECTIONS/` shells stay, but the bytes (and any stale BOOK.BIN) are
+/// reclaimed. The global reading position in XTEINK/STATE.BIN is never touched.
+pub(crate) fn empty_cache_dir<
+    D,
+    T,
+    const MAX_DIRS: usize,
+    const MAX_FILES: usize,
+    const MAX_VOLUMES: usize,
+>(
+    root: &Directory<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
+    key: &str,
+    section_count: u16,
+) where
+    D: embedded_sdmmc::BlockDevice,
+    T: TimeSource,
+{
+    let Ok(xteink) = root.open_dir(CACHE_ROOT_DIR) else {
+        return;
+    };
+    let Ok(cache) = xteink.open_dir(CACHE_V2_DIR) else {
+        return;
+    };
+    let Ok(book) = cache.open_dir(key) else {
+        return;
+    };
+    if let Ok(sections) = book.open_dir(CACHE_SECTIONS_DIR) {
+        let mut name = String::<CACHE_SECTION_FILE_BYTES>::new();
+        for spine in 0..section_count {
+            name.clear();
+            section_file_name(spine, &mut name);
+            let _ = sections.delete_file_in_dir(name.as_str());
+        }
+    }
+    let _ = book.delete_file_in_dir(CACHE_BOOK_FILE);
+    let _ = book.delete_file_in_dir(CACHE_TOC_FILE);
+    let _ = book.delete_file_in_dir(CACHE_COVER_FILE);
+}
+
 pub(crate) fn write_v2_book_index<
     D,
     T,
