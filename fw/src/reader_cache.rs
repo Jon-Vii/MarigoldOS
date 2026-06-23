@@ -72,7 +72,7 @@ impl EpubTocSink for LibraryTocSink<'_, '_> {
             .package
             .spine
             .iter()
-            .position(|item| href_matches_spine(href, item.href))
+            .position(|item| href_matches_spine(href, item.href.of(self.package.opf_text)))
             .map(|index| index as i16)
             .unwrap_or(-1);
         // Stream the full chapter list (uncapped up to the scratch buffer)
@@ -884,8 +884,10 @@ where
         core::str::from_utf8(&scratch.opf[..opf_len]).map_err(|_| ReaderCacheError::Utf8)?;
     let package = parse_opf(opf_xml, BookId(2), source_path, 0, opf_path)?;
     esp_println::println!(
-        "epub: opf parsed after {} ms",
-        open_started.elapsed().as_millis()
+        "epub: opf parsed after {} ms (spine={} truncated={})",
+        open_started.elapsed().as_millis(),
+        package.spine.len(),
+        package.spine_truncated
     );
 
     library.set_book_labels(package.meta.title, package.meta.author);
@@ -939,7 +941,9 @@ where
     let mut section_count = 0usize;
     let mut total_pages = 0u32;
     let mut saw_spine = false;
-    let mut book_partial = false;
+    // A spine clipped at MAX_SPINE_ITEMS means the tail chapters were dropped at
+    // parse, so the book is partial even if every kept section caches cleanly.
+    let mut book_partial = package.spine_truncated;
     let visible_page_capacity = library.page_capacity().max(1);
     let generate_toc_from_headings = library.toc_count() == 0;
     let start_spine_index = package
@@ -948,7 +952,7 @@ where
             package
                 .spine
                 .iter()
-                .position(|item| href_matches_spine(href, item.href))
+                .position(|item| href_matches_spine(href, item.href.of(package.opf_text)))
         })
         .unwrap_or_else(|| inferred_start_spine_index(&package));
 
@@ -963,7 +967,7 @@ where
         }
         saw_spine = true;
         library.clear_lines();
-        resolve_epub_href(opf_path, spine.href, &mut xhtml_path)?;
+        resolve_epub_href(opf_path, spine.href.of(package.opf_text), &mut xhtml_path)?;
         esp_println::println!("epub: find spine {}", xhtml_path.as_str());
         let Ok(xhtml_entry) = zip.find_entry(&xhtml_path, scratch.header, scratch.name) else {
             continue;
@@ -1104,20 +1108,16 @@ where
 }
 
 fn spine_item_is_navigation(
-    item: &proto::epub::SpineItem<'_>,
+    item: &proto::epub::SpineItem,
     package: &proto::epub::EpubPackage<'_>,
 ) -> bool {
-    let lower_href = LowerAscii::<160>::new(item.href);
-    let lower_props = LowerAscii::<96>::new(item.properties);
-    item.media_type == "application/x-dtbncx+xml"
-        || package
-            .nav_href
-            .map(|href| href == item.href)
-            .unwrap_or(false)
-        || package
-            .ncx_href
-            .map(|href| href == item.href)
-            .unwrap_or(false)
+    let opf = package.opf_text;
+    let href = item.href.of(opf);
+    let lower_href = LowerAscii::<160>::new(href);
+    let lower_props = LowerAscii::<96>::new(item.properties.of(opf));
+    item.media_type.of(opf) == "application/x-dtbncx+xml"
+        || package.nav_href.map(|nav| nav == href).unwrap_or(false)
+        || package.ncx_href.map(|ncx| ncx == href).unwrap_or(false)
         || lower_props.word_eq("nav")
         || lower_href.ends_with("toc.xhtml")
         || lower_href.ends_with("toc.html")
@@ -1132,7 +1132,7 @@ fn inferred_start_spine_index(package: &proto::epub::EpubPackage<'_>) -> usize {
     let Some(first) = package.spine.first() else {
         return 0;
     };
-    let lower_href = LowerAscii::<MAX_ENTRY_NAME_BYTES>::new(first.href);
+    let lower_href = LowerAscii::<MAX_ENTRY_NAME_BYTES>::new(first.href.of(package.opf_text));
     if lower_href.contains("titlepage")
         || lower_href.contains("title-page")
         || lower_href.contains("cover")

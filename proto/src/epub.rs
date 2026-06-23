@@ -5,14 +5,17 @@ use miniz_oxide::inflate::decompress_slice_iter_to_slice;
 use miniz_oxide::inflate::stream::{inflate, InflateState};
 use miniz_oxide::{DataFormat, MZError, MZFlush, MZStatus};
 
-#[cfg(target_pointer_width = "32")]
-pub const MAX_SPINE_ITEMS: usize = 96;
-#[cfg(not(target_pointer_width = "32"))]
-pub const MAX_SPINE_ITEMS: usize = 128;
-#[cfg(target_pointer_width = "32")]
-pub const MAX_MANIFEST_ITEMS: usize = 128;
-#[cfg(not(target_pointer_width = "32"))]
-pub const MAX_MANIFEST_ITEMS: usize = 160;
+// One spine item per chapter, so this bounds how many chapters a book can have.
+// Items are now `Span`-encoded (see `SpineItem`/`Span`), ~half the size of the
+// old `&str` form, so the spine and manifest tables hold far more chapters
+// within the same (tight) EPUB-open stack budget that the fat `&str` version
+// overflowed. 192 covers very long serials (HPMOR ~122 + matter); overflow sets
+// `spine_truncated` rather than silently dropping the tail. Manifest must
+// out-size the spine (it also carries cover/nav/ncx) and errors rather than
+// truncating, so keep it comfortably ahead. One value for firmware and host so
+// a host test exercises the same ceiling the device does.
+pub const MAX_SPINE_ITEMS: usize = 192;
+pub const MAX_MANIFEST_ITEMS: usize = 224;
 pub const MAX_ENTRY_NAME_BYTES: usize = 160;
 const ZIP_TAIL_READ_WINDOW: usize = 512;
 const ZIP_EOCD_MIN_BYTES: u32 = 22;
@@ -1388,41 +1391,97 @@ impl From<ZipError> for EpubError {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ManifestItem<'a> {
-    pub id: &'a str,
-    pub href: &'a str,
-    pub media_type: &'a str,
-    pub properties: &'a str,
+/// A byte range inside the OPF text, resolved on demand. Spine and manifest
+/// items hold spans instead of `&str` so they carry no lifetime and pack into
+/// half the space -- letting the (transient, build-time) spine and manifest
+/// tables hold a long book's chapters within the tight EPUB-open stack budget,
+/// where fat `&str` items (8 bytes each on 32-bit) overflowed it. This mirrors
+/// the offset+len encoding every stored record already uses (`TocRecord`,
+/// `BlockRecord`, `SpineRecord`). The OPF is <= 16 KB, so `u16` always fits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Span {
+    pub off: u16,
+    pub len: u16,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SpineItem<'a> {
-    pub idref: &'a str,
-    pub href: &'a str,
-    pub media_type: &'a str,
-    pub properties: &'a str,
+impl Span {
+    /// The slice of `opf` this span indexes. Empty if the span is out of range
+    /// (it never is for spans built from `opf` itself).
+    pub fn of<'a>(&self, opf: &'a str) -> &'a str {
+        let start = self.off as usize;
+        opf.get(start..start + self.len as usize).unwrap_or("")
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+/// The span of `sub` within `opf`. `sub` must be a subslice of `opf` (every
+/// parsed attribute value is); anything else, or a range past `u16`, collapses
+/// to an empty span rather than panicking.
+fn span_in(opf: &str, sub: &str) -> Span {
+    let base = opf.as_ptr() as usize;
+    let start = sub.as_ptr() as usize;
+    if start < base {
+        return Span::default();
+    }
+    let off = start - base;
+    if off + sub.len() > opf.len() || off > u16::MAX as usize || sub.len() > u16::MAX as usize {
+        return Span::default();
+    }
+    Span {
+        off: off as u16,
+        len: sub.len() as u16,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct ManifestItem {
+    pub id: Span,
+    pub href: Span,
+    pub media_type: Span,
+    pub properties: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct SpineItem {
+    pub href: Span,
+    pub media_type: Span,
+    pub properties: Span,
 }
 
 pub struct EpubPackage<'a> {
     pub meta: BookMeta<'a>,
+    /// The OPF text the spine/manifest spans index into; resolve with `Span::of`.
+    pub opf_text: &'a str,
     pub opf_path: &'a str,
     pub text_reference_href: Option<&'a str>,
     pub nav_href: Option<&'a str>,
     pub ncx_href: Option<&'a str>,
-    pub manifest: Vec<ManifestItem<'a>, MAX_MANIFEST_ITEMS>,
-    pub spine: Vec<SpineItem<'a>, MAX_SPINE_ITEMS>,
+    /// True when the OPF held more spine items than `MAX_SPINE_ITEMS`, so the
+    /// spine (and the book) is clipped. Callers flag the book partial instead
+    /// of silently dropping the tail chapters.
+    pub spine_truncated: bool,
+    pub manifest: Vec<ManifestItem, MAX_MANIFEST_ITEMS>,
+    pub spine: Vec<SpineItem, MAX_SPINE_ITEMS>,
 }
 
 impl<'a> EpubPackage<'a> {
+    /// The href of a spine item, resolved against this package's OPF text.
+    pub fn spine_href(&self, item: &SpineItem) -> &'a str {
+        item.href.of(self.opf_text)
+    }
+
     pub fn chapters(&self, output: &mut Vec<ChapterMeta<'a>, MAX_SPINE_ITEMS>) {
         output.clear();
         for (index, spine) in self.spine.iter().enumerate() {
-            let title = spine.href.rsplit('/').next().unwrap_or(spine.href);
+            let href = spine.href.of(self.opf_text);
+            let title = href.rsplit('/').next().unwrap_or(href);
             let _ = output.push(ChapterMeta {
                 title,
                 spine_index: index as u16,
-                source_href: spine.href,
+                source_href: href,
             });
         }
     }
@@ -1485,10 +1544,10 @@ pub fn parse_opf<'a>(
                 if manifest_item_needed(id, href, media_type, properties, &spine_idrefs) {
                     manifest
                         .push(ManifestItem {
-                            id,
-                            href,
-                            media_type,
-                            properties,
+                            id: span_in(opf_xml, id),
+                            href: span_in(opf_xml, href),
+                            media_type: span_in(opf_xml, media_type),
+                            properties: span_in(opf_xml, properties),
                         })
                         .map_err(|_| EpubError::TooManyManifestItems)?;
                 }
@@ -1498,6 +1557,7 @@ pub fn parse_opf<'a>(
     }
 
     let mut spine = Vec::new();
+    let mut spine_truncated = false;
     let mut in_spine = false;
     let mut cursor = XmlCursor::new(opf_xml);
     while let Some(token) = cursor.next_token() {
@@ -1508,17 +1568,22 @@ pub fn parse_opf<'a>(
                 let Some(idref) = attr_value(tag, "idref") else {
                     continue;
                 };
-                let Some(item) = manifest.iter().find(|item| item.id == idref) else {
+                let Some(item) = manifest.iter().find(|item| item.id.of(opf_xml) == idref) else {
                     continue;
                 };
-                spine
+                // Manifest spans already index the same OPF, so copy them
+                // straight across.
+                if spine
                     .push(SpineItem {
-                        idref,
                         href: item.href,
                         media_type: item.media_type,
                         properties: item.properties,
                     })
-                    .ok();
+                    .is_err()
+                {
+                    spine_truncated = true;
+                    break;
+                }
             }
             _ => {}
         }
@@ -1534,18 +1599,20 @@ pub fn parse_opf<'a>(
         .iter()
         .find(|item| {
             item.properties
+                .of(opf_xml)
                 .split_ascii_whitespace()
                 .any(|prop| prop == "nav")
         })
-        .map(|item| item.href);
+        .map(|item| item.href.of(opf_xml));
     let ncx_href = manifest
         .iter()
         .find(|item| {
             item.media_type
+                .of(opf_xml)
                 .eq_ignore_ascii_case("application/x-dtbncx+xml")
-                || item.href.ends_with(".ncx")
+                || item.href.of(opf_xml).ends_with(".ncx")
         })
-        .map(|item| item.href);
+        .map(|item| item.href.of(opf_xml));
 
     Ok(EpubPackage {
         meta: BookMeta {
@@ -1555,20 +1622,22 @@ pub fn parse_opf<'a>(
             source_path,
             byte_size,
             source: BookSource::MicroSd,
-            cover_status: cover_status(&manifest),
+            cover_status: cover_status(&manifest, opf_xml),
         },
+        opf_text: opf_xml,
         opf_path,
         text_reference_href,
         nav_href,
         ncx_href,
+        spine_truncated,
         manifest,
         spine,
     })
 }
 
-fn collect_fallback_spine_items<'a>(
-    opf_xml: &'a str,
-    spine: &mut Vec<SpineItem<'a>, MAX_SPINE_ITEMS>,
+fn collect_fallback_spine_items(
+    opf_xml: &str,
+    spine: &mut Vec<SpineItem, MAX_SPINE_ITEMS>,
 ) -> Result<(), EpubError> {
     let mut in_manifest = false;
     let mut cursor = XmlCursor::new(opf_xml);
@@ -1577,26 +1646,16 @@ fn collect_fallback_spine_items<'a>(
             Token::Start(tag) if tag_name_is(tag, "manifest") => in_manifest = true,
             Token::End(tag) if tag_name_is(tag, "manifest") => in_manifest = false,
             Token::Start(tag) if in_manifest && tag_name_is(tag, "item") => {
-                let Some(id) = attr_value(tag, "id") else {
-                    continue;
-                };
                 let Some(href) = attr_value(tag, "href") else {
                     continue;
                 };
                 let media_type = attr_value(tag, "media-type").unwrap_or("");
                 let properties = attr_value(tag, "properties").unwrap_or("");
-                let item = ManifestItem {
-                    id,
-                    href,
-                    media_type,
-                    properties,
-                };
-                if manifest_item_is_reading_candidate(&item) {
+                if manifest_item_is_reading_candidate(href, media_type, properties) {
                     let _ = spine.push(SpineItem {
-                        idref: id,
-                        href,
-                        media_type,
-                        properties,
+                        href: span_in(opf_xml, href),
+                        media_type: span_in(opf_xml, media_type),
+                        properties: span_in(opf_xml, properties),
                     });
                 }
             }
@@ -1625,24 +1684,18 @@ fn collect_spine_idrefs(opf_xml: &str) -> Vec<&str, MAX_SPINE_ITEMS> {
     idrefs
 }
 
-fn manifest_item_is_reading_candidate(item: &ManifestItem<'_>) -> bool {
-    if item.href.is_empty()
-        || item
-            .properties
-            .split_ascii_whitespace()
-            .any(|prop| prop == "nav")
-        || item
-            .media_type
-            .eq_ignore_ascii_case("application/x-dtbncx+xml")
-        || item.href.ends_with(".ncx")
-        || item.href.ends_with(".css")
+fn manifest_item_is_reading_candidate(href: &str, media_type: &str, properties: &str) -> bool {
+    if href.is_empty()
+        || properties.split_ascii_whitespace().any(|prop| prop == "nav")
+        || media_type.eq_ignore_ascii_case("application/x-dtbncx+xml")
+        || href.ends_with(".ncx")
+        || href.ends_with(".css")
     {
         return false;
     }
-    item.media_type
-        .eq_ignore_ascii_case("application/xhtml+xml")
-        || item.href.ends_with(".xhtml")
-        || item.href.ends_with(".html")
+    media_type.eq_ignore_ascii_case("application/xhtml+xml")
+        || href.ends_with(".xhtml")
+        || href.ends_with(".html")
 }
 
 fn manifest_item_needed(
@@ -3444,9 +3497,11 @@ fn element_text<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
     None
 }
 
-fn cover_status(manifest: &[ManifestItem<'_>]) -> CoverStatus {
+fn cover_status(manifest: &[ManifestItem], opf: &str) -> CoverStatus {
     if manifest.iter().any(|item| {
-        item.id == "cover" || item.href.contains("cover") || item.media_type.starts_with("image/")
+        item.id.of(opf) == "cover"
+            || item.href.of(opf).contains("cover")
+            || item.media_type.of(opf).starts_with("image/")
     }) {
         CoverStatus::Present
     } else {
@@ -3538,7 +3593,7 @@ mod tests {
         assert_eq!(package.meta.author, "Daniel Keyes");
         assert_eq!(package.meta.cover_status, CoverStatus::Present);
         assert_eq!(package.spine.len(), 1);
-        assert_eq!(package.spine[0].href, "text/ch1.xhtml");
+        assert_eq!(package.spine[0].href.of(package.opf_text), "text/ch1.xhtml");
     }
 
     struct RecordingSink {
@@ -4027,7 +4082,7 @@ mod tests {
 
         assert_eq!(package.manifest.len(), 3);
         assert_eq!(package.spine.len(), 1);
-        assert_eq!(package.spine[0].href, "text/ch1.xhtml");
+        assert_eq!(package.spine[0].href.of(package.opf_text), "text/ch1.xhtml");
         assert_eq!(package.text_reference_href, Some("text/start.xhtml"));
         assert_eq!(package.nav_href, Some("nav.xhtml"));
         assert_eq!(package.ncx_href, Some("toc.ncx"));
@@ -4051,7 +4106,7 @@ mod tests {
             .expect("opf parses");
 
         assert_eq!(package.spine.len(), 1);
-        assert_eq!(package.spine[0].href, "text/ch1.xhtml");
+        assert_eq!(package.spine[0].href.of(package.opf_text), "text/ch1.xhtml");
     }
 
     #[test]

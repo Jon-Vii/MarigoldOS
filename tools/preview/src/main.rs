@@ -169,7 +169,7 @@ fn preview_epub(
             package
                 .spine
                 .iter()
-                .position(|item| strip_fragment(item.href) == href)
+                .position(|item| strip_fragment(item.href.of(package.opf_text)) == href)
         })
         .unwrap_or(0);
 
@@ -183,7 +183,7 @@ fn preview_epub(
         if !lines.is_empty() {
             lines.force_next_line_to_new_page();
         }
-        let path = resolve_epub_href(package.opf_path, spine.href);
+        let path = resolve_epub_href(package.opf_path, spine.href.of(package.opf_text));
         let Some(xhtml_entry) = zip.entries().flatten().find(|entry| entry.name == path) else {
             continue;
         };
@@ -284,22 +284,24 @@ fn write_cover_cache_file(
 }
 
 fn find_cover_href<'a>(package: &'a EpubPackage<'a>) -> Option<&'a str> {
+    let opf = package.opf_text;
     package
         .manifest
         .iter()
         .find(|item| {
             item.properties
+                .of(opf)
                 .split_ascii_whitespace()
                 .any(|prop| prop == "cover-image")
         })
         .or_else(|| {
             package.manifest.iter().find(|item| {
-                item.media_type.starts_with("image/")
-                    && (item.id.eq_ignore_ascii_case("cover")
-                        || item.href.to_ascii_lowercase().contains("cover"))
+                item.media_type.of(opf).starts_with("image/")
+                    && (item.id.of(opf).eq_ignore_ascii_case("cover")
+                        || item.href.of(opf).to_ascii_lowercase().contains("cover"))
             })
         })
-        .map(|item| item.href)
+        .map(|item| item.href.of(opf))
 }
 
 fn read_zip_entry(zip: &ZipArchive<'_>, entry: ZipEntry<'_>) -> Result<Vec<u8>, String> {
@@ -313,12 +315,11 @@ fn read_zip_entry(zip: &ZipArchive<'_>, entry: ZipEntry<'_>) -> Result<Vec<u8>, 
 
 fn load_css_rules(zip: &ZipArchive<'_>, package: &EpubPackage<'_>, rules: &mut CssRules) {
     rules.clear();
-    for item in package
-        .manifest
-        .iter()
-        .filter(|item| item.media_type.contains("css") || item.href.ends_with(".css"))
-    {
-        let path = resolve_epub_href(package.opf_path, item.href);
+    for item in package.manifest.iter().filter(|item| {
+        item.media_type.of(package.opf_text).contains("css")
+            || item.href.of(package.opf_text).ends_with(".css")
+    }) {
+        let path = resolve_epub_href(package.opf_path, item.href.of(package.opf_text));
         let Some(entry) = zip.entries().flatten().find(|entry| entry.name == path) else {
             continue;
         };
@@ -2106,18 +2107,14 @@ fn resolve_epub_href(opf_path: &str, href: &str) -> String {
     out
 }
 
-fn spine_item_is_navigation(item: &SpineItem<'_>, package: &EpubPackage<'_>) -> bool {
-    let lower_href = item.href.to_ascii_lowercase();
-    let lower_props = item.properties.to_ascii_lowercase();
-    item.media_type == "application/x-dtbncx+xml"
-        || package
-            .nav_href
-            .map(|href| href == item.href)
-            .unwrap_or(false)
-        || package
-            .ncx_href
-            .map(|href| href == item.href)
-            .unwrap_or(false)
+fn spine_item_is_navigation(item: &SpineItem, package: &EpubPackage<'_>) -> bool {
+    let opf = package.opf_text;
+    let href = item.href.of(opf);
+    let lower_href = href.to_ascii_lowercase();
+    let lower_props = item.properties.of(opf).to_ascii_lowercase();
+    item.media_type.of(opf) == "application/x-dtbncx+xml"
+        || package.nav_href.map(|nav| nav == href).unwrap_or(false)
+        || package.ncx_href.map(|ncx| ncx == href).unwrap_or(false)
         || lower_props
             .split_ascii_whitespace()
             .any(|prop| prop == "nav")

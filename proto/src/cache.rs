@@ -3,8 +3,14 @@ use heapless::String;
 
 pub const CACHE_MAGIC: u32 = 0x5834_5244; // X4RD
 pub const CACHE_VERSION: u16 = 1;
-pub const CACHE_V2_VERSION: u16 = 21;
-const CACHE_V2_COMPAT_VERSION: u16 = 22;
+// Bumped 21 -> 23 with the spine-cap fix. A long book cached under the old
+// 96-item spine cap was written with partial=false (truncation never tripped
+// book_partial), so it would load as a clean hit and keep stranding the tail
+// chapters on patched firmware. Rejecting the old versions forces a one-time,
+// lazy, per-book re-paginate; surviving chapters lay out identically, so
+// chapter-keyed positions carry over.
+pub const CACHE_V2_VERSION: u16 = 23;
+const CACHE_V2_COMPAT_VERSION: u16 = 23;
 pub const CACHE_ROOT_DIR: &str = "XTEINK";
 pub const CACHE_DIR: &str = "CACHE";
 pub const CACHE_V2_DIR: &str = "CACHE2";
