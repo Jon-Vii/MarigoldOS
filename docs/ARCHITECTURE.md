@@ -1,6 +1,6 @@
 # xteink-x4-os architecture
 
-This firmware is a bare-metal Rust bring-up for the Xteink X4 e-ink reader:
+This firmware is a bare-metal Rust reader OS for the Xteink X4 e-ink reader:
 ESP32-C3, SSD1677, 800x480 monochrome panel, no PSRAM.
 
 The design goal is not to imitate a desktop OS. It is a small data pipeline:
@@ -11,8 +11,6 @@ buttons -> app state -> display command -> framebuffer -> SSD1677 RAM -> refresh
 
 ## Current architecture diagram
 
-![Current architecture diagram](architecture.png)
-
 ```mermaid
 flowchart TD
     buttons["GPIO3 power button<br/>ADC button ladders"]
@@ -20,7 +18,7 @@ flowchart TD
     app_task["app_task<br/>owns ReaderState reducer shell"]
     display_task["board I/O + display task<br/>single owner of EPD bus, SD CS,<br/>ReaderStore, framebuffer"]
     power_task["power_task<br/>idle timer + deep sleep"]
-    wifi_task["wifi_task<br/>kosync sync session"]
+    wifi_task["wifi_task<br/>sync session + browser shelf"]
 
     app_core["app-core<br/>Copy message contracts<br/>ReaderState reducer<br/>RefreshPlanner"]
     display_crate["display<br/>1 bpp framebuffer<br/>drawing + fonts<br/>SSD1677 transforms"]
@@ -29,7 +27,7 @@ flowchart TD
     ui["ui<br/>bounded layout/render helpers"]
 
     epd["SSD1677 e-ink panel<br/>800x480 BW/RED RAM"]
-    sd["microSD FAT<br/>/BOOKS + card root EPUBs<br/>/XTEINK cache + state"]
+    sd["microSD FAT<br/>/BOOKS + card root EPUBs<br/>/XTEINK cache + catalog + state"]
     sleep["ESP32-C3 deep sleep"]
 
     emulator["tools/emulator<br/>host reducer + panel protocol model<br/>scenario/golden-frame runner"]
@@ -66,7 +64,9 @@ flowchart TD
 
 ## Rules
 
-- `#![no_std]`, no heap allocation in firmware paths.
+- `#![no_std]`, no heap allocation in the reading path. The one
+  exception is the Wi-Fi sync session, which donates loaned buffers to
+  esp-alloc and ends in a reset (see "Wi-Fi sync session").
 - One 48 KB 1 bpp framebuffer.
 - Display ownership is single-writer: only `display_task` touches the EPD bus.
 - Reader state ownership is single-writer: only `app_task` mutates page/menu state.
@@ -95,7 +95,7 @@ tools/emulator/ host-side development emulator and scenario runner
 app_task
   owns ReaderState
   InputEvent -> DisplayCommand::Render
-  modes: Library, Reading, Chapters, Settings
+  modes: Home, Library, Reading, Chapters, Sync, Settings
 
 board_io/display task
   owns EpdBus, SD CS, ReaderStore, and Framebuffer
@@ -123,7 +123,7 @@ wifi_task
 
 ## Wi-Fi sync session
 
-Sync is a one-way modal session because the radio blob needs ~80 KB of
+Sync is a one-way modal session because the radio blob needs ~100 KB of
 heap this firmware does not have while reading. `fw::sync_mem` owns the
 plumbing: the display task dismantles the EPUB scratch into raw regions
 (`reader_cache::dismantle_scratch`), and the wifi task donates them plus a
@@ -139,7 +139,8 @@ Progress flows both ways: before the loan, the display task flushes
 pending progress, loads the saved book through the ordinary cache path if
 needed, and ships the kosync identity (KOReader partial-MD5 of the EPUB
 file), position permille, and chapter map with the loan. The wifi task
-pulls the server position first and pushes ours only if it is ahead; a
+fetches the server position first and pulls it only when it is both
+ahead and written by another device; otherwise it pushes ours. A
 pulled position lands through the still-working `StoreProgress` path so it
 survives the session-ending reset. `proto::kosync` holds the sans-IO
 protocol pieces (MD5, partial digest, HTTP request building and response
@@ -157,7 +158,9 @@ task — still the single SD owner — through `fw::upload`'s two-buffer
 ping-pong: 4 KB chunks carry loaned buffers one way and the buffers come
 back on a return channel once written. The display task holds one SD
 session for the whole upload phase and writes `/BOOKS/<8.3>.EPU` (the
-catalog scan accepts `.epu` alongside `.epub`). The done press waits for
+catalog scan accepts `.epu` alongside `.epub`), recording the browser's
+original filename in a `/XTEINK/LABELS/<stem>.TXT` sidecar so the shelf
+and Library can label the book with it. The done press waits for
 any in-flight upload before the session-ending reset; the boot rescan
 then surfaces the new books.
 
@@ -212,12 +215,22 @@ volume. Deep sleep resets the chip and clears that state.
 bit `0`, row-major, 100 bytes per row.
 
 The SSD1677 path writes the current framebuffer to BW RAM (`0x24`). The first
-refresh after boot/display sleep also writes the current framebuffer to RED RAM
-(`0x26`) and runs a full waveform. Normal page turns use a second retained
-framebuffer as the RED RAM previous-frame source, then trigger the SSD1677 fast
-waveform. This avoids the multi-flash full-update behavior during ordinary
-reader navigation. Periodic full-refresh cleanup is available behind a constant
-but currently disabled so page-turn behavior is deterministic during bring-up.
+refresh after boot also writes the current framebuffer to RED RAM (`0x26`) and
+runs the multi-flash full waveform (~3.5 s), the only mode that reliably clears
+unknown pixels. Normal page turns use a second retained framebuffer as the RED
+RAM previous-frame source, then trigger the SSD1677 fast waveform (~421 ms).
+
+Between those sits `RefreshMode::FastClean`, the one-flicker clean: the
+display-mode-1 waveform run with the temperature register overridden to 90 C,
+selecting the hotter (shorter) OTP LUT — ghost cleanup in ~1.5 s at a small
+contrast cost. Waking from the sleep screen and view/context changes use it
+instead of the full waveform, since the panel's contents are known. After a
+FastClean settles, the update sequence reloads the sensed temperature so later
+fast refreshes return to sensor-accurate timing.
+
+The user-facing `RefreshPolicy` in Settings selects between `FastOnly`,
+`FullOnWake` (the default), and `FullEveryTen`, which inserts a FastClean
+cleanup after every ten fast refreshes.
 
 `display::epd` contains three transform constants currently validated during bring-up:
 `MIRROR_X = true`, `MIRROR_Y = false`, and `REVERSE_BITS = true`. The logical
@@ -293,7 +306,11 @@ and the host preview tool:
   against. Both zip front-ends implement it, and one shared streaming inflate
   engine sits behind them, so entry reads behave identically regardless of
   whether compressed bytes come from random-access or forward-only storage.
-- `EpubPackage` for container/OPF metadata, manifest, and spine.
+- `EpubPackage` for container/OPF metadata, manifest, and spine. Spine and
+  manifest strings are stored as offset+length spans into the shared OPF
+  text rather than inline strings, halving each item's size so long books
+  (192-item spine cap, 224-item manifest cap) fit within the tight
+  EPUB-open stack budget.
 - `xhtml_blocks_to_sink` with `TextRole`, `FontStyle`, and `TextAlign` as the
   single XHTML extraction path feeding bounded block records.
 - `BookV2Header` with `BookV2SectionRecord`, and `SectionV2Header` with
@@ -335,18 +352,33 @@ cache-encoding change; a spacing-only change re-walks line heights without a
 reparse.
 
 Cache paths use FAT 8.3-safe names because `embedded-sdmmc` operates on short
-file names in the firmware path. The library list is a separate flat catalog
-snapshot at `/XTEINK/CATALOG.BIN`. On boot/refresh, firmware first tries to load
-this cached snapshot, then refreshes `/BOOKS` and card-root discovery in a
-storage command. Files renders the current snapshot immediately. It may show
-“Library unavailable” before any successful cache/scan, and “No books found”
-only after a completed scan proves the card has no EPUBs.
+file names in the firmware path. The library list is a windowed catalog
+snapshot at `/XTEINK/CATALOG.BIN` (v3: `X4CT` magic, u16 book count, 92-byte
+records). Firmware streams it `LIBRARY_WINDOW` (16) entries at a time instead
+of holding the whole list in RAM, so library size is bounded by the card, and
+only window crossings re-read it. The currently open book sits in a separate
+`active_entry` so the reading path never depends on where the list is
+scrolled. On boot/refresh, firmware first loads a window from the cached
+snapshot, then refreshes `/BOOKS` and card-root discovery in a storage
+command, streaming the fresh catalog out in batches without ever holding it
+whole. Entries are labeled with the book's real title from its cached
+`BOOK.BIN`, falling back to the stored original-filename label for uploaded
+8.3-named books, then to the prettified file stem. Each fresh catalog write
+also sweeps `CACHE2` and reclaims caches whose stored source identity no
+longer matches any catalogued book, deleting the data files and the emptied
+directories while leaving `STATE.BIN` intact. Files renders the current
+snapshot immediately. It may show “Library unavailable” before any successful
+cache/scan, and “No books found” only after a completed scan proves the card
+has no EPUBs.
 
 ```text
 /XTEINK/CACHE2/E<hash>/BOOK.BIN
+/XTEINK/CACHE2/E<hash>/TOC.BIN
 /XTEINK/CACHE2/E<hash>/COVER.BIN
 /XTEINK/CACHE2/E<hash>/SECTIONS/S000.BIN
 /XTEINK/CACHE2/E<hash>/SECTIONS/S001.BIN
+/XTEINK/CATALOG.BIN
+/XTEINK/LABELS/<stem>.TXT
 /XTEINK/STATE.BIN
 ```
 
@@ -354,14 +386,18 @@ only after a completed scan proves the card has no EPUBs.
 start page, page count, partial), TOC records, and a string blob for title,
 author, and TOC titles. Section files hold a `SectionV2Header`, page records,
 block records, per-block paragraph flags, and the UTF-8 text blob of that
-section's pre-wrapped lines. The active firmware state keeps only loaded book
+section's pre-wrapped lines. `TOC.BIN` is a per-book chapter-list sidecar for
+the Chapters overview, distinct from the TOC records inside `BOOK.BIN`.
+The active firmware state keeps only loaded book
 metadata, the full section index, the active section's page/block records and
 text bytes, and small ZIP/XML scratch buffers. Spine XHTML members of any size
 stream completely through the resumable block parser in bounded inflate
 windows, so chapter content is never truncated by scratch-buffer limits. `STATE.BIN`
-stores the encoded `AppStateRecord`; version 2 records include the SD source
-size and path-derived hash so boot restore can map saved progress back onto the
-scanned SD catalog instead of trusting a volatile list index.
+stores the encoded `AppStateRecord`; version 2 and later records include the
+SD source size and path-derived hash so boot restore can map saved progress
+back onto the scanned SD catalog instead of trusting a volatile list index.
+The current version 3 also persists the type settings (font size and line
+spacing).
 
 `COVER.BIN` is an optional Home-cover sidecar for the same cache key. It stores
 a tiny header followed by a 202x303, 1-bit, row-packed bitmap matching the Dock
@@ -415,7 +451,7 @@ The firmware now has the e-reader surfaces as explicit app state:
 - `Library`: selects a book or opens settings.
 - `Reading`: owns the active book/page position.
 - `Chapters`: selects a chapter within the current book.
-- `Settings`: cycles orientation and refresh policy.
+- `Settings`: cycles orientation, refresh policy, font size, and line spacing.
 
 Every surface renders in landscape: the X4 is held that way for its side page
 buttons, so `Home`, `Library`, and `Settings` share the reading posture rather
@@ -454,13 +490,18 @@ The deeper modules keep implementation complexity behind narrow data-oriented
 interfaces:
 
 ```text
-fw::display_flush  SSD1677 init, RAM streaming, sleep, and byte transforms
-fw::library_sd     FAT scan, SD chip-select handling, and file discovery
-fw::reader_cache   EPUB-to-cache loading into bounded proto::cache records
-fw::reader_layout  page indexing, line wrapping, style markers, measurements
-fw::reader_store   bounded loaded-book/library state shared by cache and views
-fw::views          Home/Files/Reading/Chapters/Settings drawing
-fw::tasks::display task loop, refresh policy, and event publishing
+fw::display_flush       SSD1677 init, RAM streaming, sleep, and byte transforms
+fw::library_sd          FAT scan, SD chip-select handling, and file discovery
+fw::sd_session          SD session open/close and the upload write pump
+fw::reader_cache        EPUB-to-cache loading into bounded proto::cache records
+fw::reader_cache_files  cache/state/credential/label file records on the card
+fw::reader_layout       page indexing, line wrapping, style markers, measurements
+fw::reader_store        bounded loaded-book/library state shared by cache and views
+fw::catalog             the built-in fallback book's static content
+fw::sync_mem            the one-way memory loan for the Wi-Fi session
+fw::upload              browser-to-shelf upload ping-pong plumbing
+fw::views               Home/Files/Reading/Chapters/Settings drawing
+fw::tasks::display      task loop, refresh policy, and event publishing
 ```
 
 Do not split this by moving bus access into a second task unless there is also a
@@ -492,4 +533,7 @@ flash/NVM fallback remains separate from the record format.
    Raw ADC serial logging and on-screen GPIO values are now behind debug
    constants so normal firmware only refreshes on debounced button edges.
 6. Measure deep-sleep current.
-7. Only then add partial refresh, NVM progress, storage, and Wi-Fi sync.
+
+Storage, saved progress, Wi-Fi sync, and the FastClean refresh mode have
+all landed since this checklist was written; partial-window refresh
+remains deliberately shelved.
