@@ -12,9 +12,6 @@ If you would like to explore the OS without flashing a device,
 [try it in your browser](https://jon-vii.github.io/xteink-x4-os/),
 the same code compiled to WebAssembly, with simulated e-ink and a selection of public-domain books.
 
-*Frames in this README are rendered by the host emulator, pixel-identical
-to what the firmware writes to the panel.*
-
 ## Features
 
 - Every surface renders landscape; the X4 is held sideways for its page
