@@ -1,6 +1,6 @@
 # xteink-x4-os
 
-![Home screen](docs/home.png)
+![The X4 home screen in the browser emulator, showing Alice's Adventures in Wonderland](docs/home.png)
 
 If you would like to explore the OS without flashing a device,
 you may [try it in your browser](https://jon-vii.github.io/xteink-x4-os/),

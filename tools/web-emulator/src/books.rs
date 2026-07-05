@@ -1,6 +1,7 @@
-//! Fake shelf for the web emulator: three small built-in books parsed from
-//! a light line markup into the same block records the firmware caches, so
-//! `ui::reading` paginates and draws them exactly as it would on the card.
+//! Fake shelf for the web emulator: a few small public-domain books parsed
+//! from a light line markup into the same block records the firmware caches,
+//! so `ui::reading` paginates and draws them exactly as it would on the card.
+//! The first entry is the default Continue book a fresh visit opens to.
 
 use display::font::{FontStyle, TypeSettings};
 use proto::cache::{BlockRecord, PageRecord};
@@ -17,12 +18,7 @@ pub struct BookSource {
     pub text: &'static str,
 }
 
-pub const SHELF: [BookSource; 4] = [
-    BookSource {
-        title: "A Short Tour",
-        author: "The X4 Firmware",
-        text: include_str!("../books/tour.txt"),
-    },
+pub const SHELF: [BookSource; 3] = [
     BookSource {
         title: "Alice's Adventures in Wonderland",
         author: "Lewis Carroll",
