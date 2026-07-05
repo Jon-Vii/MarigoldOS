@@ -314,17 +314,11 @@
 
 <main>
   <p>
-    This is the X4's firmware — the same Rust that runs on the device's
-    ESP32-C3 — compiled to WebAssembly. The screen above is its real
-    framebuffer: the same Literata bitmaps, the same line wrap, the same
-    pagination, drawn one bit deep at 800&nbsp;×&nbsp;480.
-  </p>
-  <p>
-    The hardware around it is pretend. The SD card is three small built-in
-    books, the Wi-Fi sync session is scripted, and the e-ink panel is a
-    canvas that flashes the way the real GDEQ0426T82 does: a quick
-    421&nbsp;ms update for a page turn, a full inverting clean when
-    ghosting builds up. Your place on the shelf is kept in this browser.
+    The X4's firmware — the same Rust that runs on the device —
+    compiled to WebAssembly, drawing its real framebuffer one bit deep
+    at 800&nbsp;×&nbsp;480. The hardware around it is pretend: built-in
+    books stand in for the card, the radio is scripted, and the canvas
+    refreshes the way the real panel does.
   </p>
 </main>
 
