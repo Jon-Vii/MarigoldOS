@@ -60,6 +60,13 @@ Only flashing needs the device on USB; the app logic, parsers, renderer,
 and emulator all build and test on a plain host. The nightly toolchain is
 pinned in `rust-toolchain.toml`.
 
+## Flashing
+
+`cargo run` flashes over USB for development. To install without a toolchain —
+from a built image, or onto a unit that shipped with USB flashing disabled —
+`tools/build-release.sh` produces the images and [docs/FLASHING.md](docs/FLASHING.md)
+covers the paths: web flasher, SD card, and the in-app update from the card.
+
 ## Credits
 
 - [Literata](https://github.com/googlefonts/literata) (OFL) for the reading typeface
