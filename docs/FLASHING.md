@@ -52,7 +52,8 @@ xxd -s 0x20 -l 4 target/release-images/firmware.bin   # -> 3254 cdab (0xABCD5432
 ## Building the release images
 
 ```sh
-tools/build-release.sh
+tools/build-release.sh        # X4 (default)
+tools/build-release.sh x3     # X3 — see the experimental section below
 ```
 
 Produces, in `target/release-images/`:
@@ -74,6 +75,43 @@ Produces, in `target/release-images/`:
 > there lands a bootloader in the middle of the app partition and bricks the
 > device. Writing to `0x0` is the fastest brick on any unit. The SD card and the
 > app slot only ever take `update.bin`/`firmware.bin`.
+
+## Xteink X3 (experimental — unverified on hardware)
+
+The X3 is the X4's sibling: same ESP32-C3, same 16 MB flash, same partition
+table and bootloader path, on a smaller 792×528 UC8253 panel with a BQ27220
+battery gauge instead of the X4's ADC divider. Support lives behind the
+`device-x3` feature; the default build is unchanged and byte-identical for the
+X4.
+
+> [!WARNING]
+> Every panel- and gauge-facing value is transcribed from the CrossPoint
+> reference and **has not been run on real X3 silicon**. A mirrored, offset, or
+> blank first boot is expected and diagnosable — not a brick (same SoC and
+> partition table as the X4). See `docs/plans/2026-07-06-x3-support-plan.md`
+> for the Phase 6 bring-up checklist.
+
+Build the X3 images:
+
+```sh
+tools/build-release.sh x3
+```
+
+Produces, in `target/release-images/`: **`firmware-x3.bin`** (flash to
+`0x10000`), **`FWUPDX3.BIN`** (SD-card trigger — a *device-specific* name, so a
+card can't cross-flash an X4 image onto an X3 or vice versa), and
+**`full-flash-x3.bin`** (whole-flash, unlocked units only). The flash paths are
+the same as the X4 below, with the `-x3` image names.
+
+> [!NOTE]
+> The X3 charges and flashes through a **4-pin magnetic pogo connector**, not
+> USB-C. The 2-pin variant of that cable is charge-only and will not enumerate
+> as a serial port. Serial is behind the same native USB-Serial-JTAG as the X4.
+
+When testing, **capture the serial log** (`cargo run` monitors it, or
+`espflash monitor`): panel init, the `X3` BUSY-wait completions, per-refresh
+timings, and `input: bq27220` battery reads are what pin down which bring-up
+value (BUSY timing → orientation → waveforms → battery) needs adjustment.
 
 ## Flashing an unlocked unit
 
@@ -199,3 +237,7 @@ Not yet done:
 - [ ] **Locked-unit confirmation** — that our app-descriptor eFuse range
       satisfies the stock gate and the OEM SD updater accepts our `update.bin`.
       Needs a locked device; the author's is unlocked.
+- [ ] **Xteink X3 bring-up** — the `device-x3` build compiles and the X4 build is
+      byte-identical, but the UC8253 panel driver and BQ27220 gauge are ported
+      from reference and unproven on real X3 silicon. See the experimental
+      section above and `docs/plans/2026-07-06-x3-support-plan.md` Phase 6.
