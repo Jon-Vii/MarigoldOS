@@ -63,14 +63,15 @@ pub const LUT_LEN: usize = 42;
 /// reference value. Lower it first if the first bench frames are noisy.
 pub const SPI_HZ: u32 = 16_000_000;
 
-/// Panel orientation: the X3 is driven by row-reversed plane writes only —
-/// no byte mirror, no bit reversal — the opposite of the X4's SSD1677
-/// (MIRROR_X + REVERSE_BITS). CrossPoint's `sendPlaneFlipped` streams rows
-/// bottom-to-top; MIRROR_Y reproduces exactly that byte order through the
-/// shared band transform. UNVERIFIED on hardware.
-pub const MIRROR_X: bool = false;
+/// Panel orientation: all three transforms are applied — same as the X4's
+/// SSD1677 but with MIRROR_Y added. These values are verified on hardware:
+/// a flashed X3 build using MIRROR_X + MIRROR_Y + REVERSE_BITS renders
+/// correctly. (The CrossPoint reference's `sendPlaneFlipped` alone —
+/// MIRROR_Y only, no X mirror or bit reversal — produced a horizontally
+/// mirrored, bit-reversed image on the actual panel.)
+pub const MIRROR_X: bool = true;
 pub const MIRROR_Y: bool = true;
-pub const REVERSE_BITS: bool = false;
+pub const REVERSE_BITS: bool = true;
 
 pub fn fill_transformed_band(fb: &Framebuffer, band_y: usize, out: &mut [u8; BAND_BYTES]) -> usize {
     fill_transformed_band_impl::<MIRROR_X, MIRROR_Y, REVERSE_BITS>(fb, band_y, out)
