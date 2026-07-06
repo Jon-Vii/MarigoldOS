@@ -11,15 +11,31 @@ pub mod literata_semibold_generated;
 pub mod literata_sizes_generated;
 pub mod render;
 
+/// Xteink X4: GDEQ0426T82 4.26" panel, SSD1677 controller.
+#[cfg(not(feature = "device-x3"))]
 pub const WIDTH: usize = 800;
+#[cfg(not(feature = "device-x3"))]
 pub const HEIGHT: usize = 480;
+
+/// Xteink X3: 3.68" panel, UC8253 controller.
+#[cfg(feature = "device-x3")]
+pub const WIDTH: usize = 792;
+#[cfg(feature = "device-x3")]
+pub const HEIGHT: usize = 528;
+
 pub const ROW_BYTES: usize = WIDTH / 8;
 pub const FB_BYTES: usize = ROW_BYTES * HEIGHT;
 pub const BAND_ROWS: usize = 80;
 pub const BAND_BYTES: usize = ROW_BYTES * BAND_ROWS;
 
-const _: () = assert!(FB_BYTES == 48_000);
-const _: () = assert!(BAND_BYTES == 8_000);
+// WIDTH must stay byte-addressable; HEIGHT need not divide into bands —
+// fill_transformed_band already emits a short final band.
+const _: () = assert!(WIDTH % 8 == 0);
+
+#[cfg(not(feature = "device-x3"))]
+const _: () = assert!(FB_BYTES == 48_000 && BAND_BYTES == 8_000);
+#[cfg(feature = "device-x3")]
+const _: () = assert!(FB_BYTES == 52_272 && BAND_BYTES == 7_920);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Rect {

@@ -181,6 +181,9 @@ fn main() -> ! {
         }
     }
 
+    // One display band must fit a single DMA buffer (X4 fills it exactly;
+    // the X3's 99-byte rows leave 80 bytes slack).
+    const _: () = assert!(display::BAND_BYTES <= 8000);
     let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = esp_hal::dma_buffers!(8000);
     let dma_rx = esp_hal::dma::DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
     let dma_tx = esp_hal::dma::DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();

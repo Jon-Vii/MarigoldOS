@@ -3,6 +3,13 @@ name = "display"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Xteink X3 panel (792x528, UC8253). Off = Xteink X4 (800x480, SSD1677),
+# the default so host tools and existing builds are untouched. Additive so
+# feature unification across the workspace can't select two panels: any
+# crate enabling it flips the whole build to X3.
+device-x3 = []
+
 [dependencies]
 embedded-hal = "1.0.0"
 embedded-hal-async = "1.0.0"
