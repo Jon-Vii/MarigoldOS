@@ -1,28 +1,38 @@
 #!/usr/bin/env bash
-# Build the distributable firmware images for the Xteink X4.
+# Build the distributable firmware images for the Xteink X4 or X3.
 #
-# Produces, in target/release-images/:
+# Usage: tools/build-release.sh [x4|x3]   (default x4)
+#
+# Produces, in target/release-images/ (X3 images carry an -x3 suffix):
 #   firmware.bin    app image for OTA slot app0/ota_0. Flash to 0x10000. This is
 #                   what the web flasher, `esptool write_flash 0x10000`, and the
 #                   in-app SD/OTA updater consume. Leaves the bootloader intact.
-#   update.bin      byte-identical to firmware.bin, under the filename the stock
-#                   OEM SD-card updater looks for on a locked unit's card. The
-#                   OEM updater writes it to the app slot (0x10000) — it is an
-#                   app image, NOT a full-flash image.
+#   FWUPDATE.BIN    byte-identical to firmware.bin, under the filename the
+#   (FWUPDX3.BIN)   in-app SD updater looks for on the card root. The name is
+#                   device-specific so a card can't cross-flash the wrong panel.
 #   full-flash.bin  merged 16 MB image (bootloader + partition table + app) for
 #                   programming a whole *unlocked* unit from scratch with
 #                   `esptool write_flash 0x0`. NEVER put this on an SD card and
 #                   NEVER write it to 0x10000 — it would land a bootloader in the
 #                   app slot and brick the device.
 #
-# firmware.bin/update.bin carry our app descriptor (magic 0xABCD5432 at image
-# offset 0x20) with the wide-open eFuse-revision range, which is what lets the
-# stock bootloader on a locked unit accept a non-stock image.
-#
-# Usage: tools/build-release.sh
+# The app images carry our app descriptor (magic 0xABCD5432 at image offset
+# 0x20) with the wide-open eFuse-revision range, which is what lets the stock
+# bootloader on a locked unit accept a non-stock image.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+# SD_IMAGE is the card-root filename the SD updater consumes: on the X4 the
+# `update.bin` the stock OEM updater reads (also what our in-app updater takes
+# once renamed to FWUPDATE.BIN); on the X3 our in-app updater's own trigger,
+# FWUPDX3.BIN (device-specific so a card can't cross-flash the wrong panel).
+DEVICE="${1:-x4}"
+case "$DEVICE" in
+  x4) FEATURES=(); SUFFIX=""; SD_IMAGE=update.bin ;;
+  x3) FEATURES=(--features device-x3); SUFFIX="-x3"; SD_IMAGE=FWUPDX3.BIN ;;
+  *)  echo "usage: $0 [x4|x3]" >&2; exit 2 ;;
+esac
 
 CHIP=esp32c3
 FLASH_SIZE=16mb
@@ -30,9 +40,11 @@ PARTS=partitions.csv
 APP_LABEL=app0                # the ota_0 partition's label in partitions.csv
 ELF=target/riscv32imc-unknown-none-elf/release/fw
 OUT=target/release-images
+FW="$OUT/firmware$SUFFIX.bin"
+FULL="$OUT/full-flash$SUFFIX.bin"
 
-echo "==> building fw (release)"
-cargo build -p fw --release
+echo "==> building fw ($DEVICE, release)"
+cargo build -p fw --release "${FEATURES[@]}"
 
 mkdir -p "$OUT"
 
@@ -43,21 +55,21 @@ common=(--chip "$CHIP" --flash-size "$FLASH_SIZE"
         --partition-table "$PARTS" --target-app-partition "$APP_LABEL"
         --ignore-app-descriptor)
 
-echo "==> firmware.bin (app image, app0/ota_0 @ 0x10000)"
-espflash save-image "${common[@]}" "$ELF" "$OUT/firmware.bin"
+echo "==> firmware$SUFFIX.bin (app image, app0/ota_0 @ 0x10000)"
+espflash save-image "${common[@]}" "$ELF" "$FW"
 
-echo "==> update.bin (same app image, name the OEM SD updater reads)"
-cp "$OUT/firmware.bin" "$OUT/update.bin"
+echo "==> $SD_IMAGE (same app image, name the SD updater reads)"
+cp "$FW" "$OUT/$SD_IMAGE"
 
-echo "==> full-flash.bin (merged 16 MB, unlocked-only, write to 0x0)"
-espflash save-image "${common[@]}" --merge "$ELF" "$OUT/full-flash.bin"
+echo "==> full-flash$SUFFIX.bin (merged 16 MB, unlocked-only, write to 0x0)"
+espflash save-image "${common[@]}" --merge "$ELF" "$FULL"
 
 echo
 echo "Artifacts in $OUT:"
-ls -la "$OUT/firmware.bin" "$OUT/update.bin" "$OUT/full-flash.bin"
+ls -la "$FW" "$OUT/$SD_IMAGE" "$FULL"
 echo
 echo "Flash paths (see docs/FLASHING.md):"
-echo "  Locked (stock updater): copy update.bin to the SD card root, then power"
-echo "                          on holding Power + Up on USB power."
-echo "  Unlocked, app only    : esptool.py --chip $CHIP write_flash 0x10000 $OUT/firmware.bin"
-echo "  Unlocked, whole flash : esptool.py --chip $CHIP write_flash 0x0 $OUT/full-flash.bin"
+echo "  In-app SD updater : copy $SD_IMAGE to the SD card root, then power"
+echo "                      on holding Power + Up on USB power."
+echo "  Unlocked, app only: esptool.py --chip $CHIP write_flash 0x10000 $FW"
+echo "  Unlocked, whole   : esptool.py --chip $CHIP write_flash 0x0 $FULL"
