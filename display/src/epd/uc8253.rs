@@ -191,6 +191,9 @@ pub struct FlushPlan {
     pub steps: &'static [FlushStep],
 }
 
+/// Settle delay after a non-fast refresh, matching the reference's 200 ms.
+const SETTLE_MS: u16 = 200;
+
 const FULL_STEPS: &[FlushStep] = &[
     FlushStep::LoadBank(RefreshMode::Full),
     FlushStep::WritePlane {
@@ -204,7 +207,7 @@ const FULL_STEPS: &[FlushStep] = &[
     },
     FlushStep::PowerOn,
     FlushStep::DisplayRefresh,
-    FlushStep::DelayMs(200),
+    FlushStep::DelayMs(SETTLE_MS),
     FlushStep::WritePlane {
         plane: RamPlane::Old,
         source: FrameSource::Current,
@@ -253,7 +256,7 @@ const CLEAN_POWERED_STEPS: &[FlushStep] = &[
         source: FrameSource::Current,
     },
     FlushStep::DisplayRefresh,
-    FlushStep::DelayMs(200),
+    FlushStep::DelayMs(SETTLE_MS),
 ];
 
 const CLEAN_POWER_ON_STEPS: &[FlushStep] = &[
@@ -264,7 +267,7 @@ const CLEAN_POWER_ON_STEPS: &[FlushStep] = &[
     },
     FlushStep::PowerOn,
     FlushStep::DisplayRefresh,
-    FlushStep::DelayMs(200),
+    FlushStep::DelayMs(SETTLE_MS),
 ];
 
 /// Select the exact controller operation stream for one requested refresh.
