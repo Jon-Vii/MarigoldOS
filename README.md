@@ -1,43 +1,31 @@
 # MarigoldOS
 
+MarigoldOS is a lightweight, open-source firmware for the XTEink X4 and X3 e-readers.
+
+**[Try the emulator](https://jon-vii.github.io/MarigoldOS/) · [Flashing](docs/FLASHING.md) · [Architecture](docs/ARCHITECTURE.md)**
+
 ![The X4 home screen in the browser emulator, showing Alice's Adventures in Wonderland](docs/home.png)
 
-if you would like to explore the OS without flashing a device, [try the emulator](https://jon-vii.github.io/xteink-x4-os/) in your browser, 
-the firmware's app and rendering code compiled to WebAssembly, with a simulated e-ink display and a selection of public-domain books.
+If you'd like to explore the OS without flashing a device,
+[try the emulator](https://jon-vii.github.io/MarigoldOS/) in your browser — the
+firmware's app and rendering code compiled to WebAssembly, with a simulated
+e-ink display and a selection of public-domain books.
 
 ## Features
 
-- Every surface renders landscape; the X4 is held sideways for its page
-  buttons.
-- EPUBs parse once, streaming ZIP and XHTML into a whole-book pagination
-  cache on the card. A cached book reopens in tens of milliseconds.
-- Literata in four styles, pre-rendered to bitmap glyphs on the host.
-  Font size and line spacing are adjustable, and a spacing change
-  repaginates without reparsing the book.
-- The library streams from a catalog snapshot on the card, so its size
-  is not bounded by RAM.
-- The device joins your Wi-Fi and serves a shelf page on your LAN: list,
-  upload, and delete books from any browser. The radio needs ~100 KB of
-  heap the firmware does not have, so a session loans it out of the
-  reader's scratch buffers and ends with a reset that hands them back.
-- With no stored credentials, the device raises an open `XTEINK-X4`
-  hotspot with a captive portal and an on-screen QR code.
-- Idle ends in a sleep screen, then the panel and the SoC enter deep
-  sleep. The power button takes the same path.
+### Reading
+- **EPUB 2 & 3** — native table of contents for each (EPUB 3 nav, NCX fallback)
+- **Two typefaces** — Literata and Merriweather, with adjustable size, weight, and line spacing
+- **Whole-book pagination cache** — a book parses once and reopens in tens of milliseconds
+- **Fast page turns** — 473 ms end-to-end, within ~50 ms of the panel's rated floor
 
-## Performance
+### Library & sync
+- **Streamed catalog** — library size isn't bounded by RAM
+- **Local Wi-Fi shelf** — upload, list, and delete books from your browser
+- **Zero-config onboarding** — with no stored credentials, the reader raises an open hotspot with a captive portal and an on-screen QR code
 
-| | |
-|---|---|
-| Page turn | 473 ms end-to-end; 421 ms of that is the panel's rated fast waveform |
-| Wake from sleep | one flicker, ~1.5 s |
-| Cold-boot full refresh | 3.5 s |
-| Reopen a cached book | tens of milliseconds |
-| RAM | 400 KB SRAM, no PSRAM |
-| Usable stack | ~43 KB |
-| Framebuffer | one, 48 KB, 1 bit per pixel |
-
-Internals: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+### Try it
+- **Browser emulator** — the real render code in WebAssembly, no device needed
 
 ## Development
 
@@ -48,9 +36,9 @@ cargo run --manifest-path tools/emulator/Cargo.toml --target aarch64-apple-darwi
   --no-default-features -- --scenario fixtures/scenarios --check fixtures/golden
 ```
 
-Only flashing needs the device on USB; the app logic, parsers, renderer,
-and emulator all build and test on a plain host. The nightly toolchain is
-pinned in `rust-toolchain.toml`.
+Only flashing needs the device on USB; the app logic, parsers, renderer, and
+emulator all build and test on a plain host. The nightly toolchain is pinned in
+`rust-toolchain.toml`.
 
 ## Flashing
 

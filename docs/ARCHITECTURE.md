@@ -551,6 +551,18 @@ orientation, reading orientation, refresh policy, source hash, and source file
 size. The firmware stores it at `/XTEINK/STATE.BIN` for SD reading progress;
 flash/NVM fallback remains separate from the record format.
 
+## Performance
+
+| | |
+|---|---|
+| Page turn | 473 ms end-to-end; 421 ms of that is the panel's rated fast waveform |
+| Wake from sleep | one flicker, ~1.5 s |
+| Cold-boot full refresh | 3.5 s |
+| Reopen a cached book | tens of milliseconds |
+| RAM | 400 KB SRAM, no PSRAM |
+| Usable stack | ~43 KB |
+| Framebuffer | one, 48 KB, 1 bit per pixel |
+
 ## Bring-up checklist
 
 1. Flash firmware and confirm the reader shell appears.
