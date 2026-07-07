@@ -36,13 +36,19 @@ static SCREEN_POWERED: AtomicBool = AtomicBool::new(false);
 const SETTLE_MS: u64 = 200;
 
 pub(crate) async fn init_panel(epd: &mut Epd) {
+    // Bring-up probe: a live UC8253 twitches BUSY across a hardware reset;
+    // a line that reads high at every sample never left power-up, which is
+    // a board/RST problem, not a command-stream one.
+    esp_println::println!("display: x3 busy pre-reset high={:?}", epd.busy_is_high());
     epd.reset().await;
+    esp_println::println!("display: x3 busy post-reset high={:?}", epd.busy_is_high());
     // The X3 needs an extra settle after reset beyond the shared pulse.
     Timer::after_millis(50).await;
 
     for (cmd, data) in INIT_SEQUENCE {
         let _ = epd.command(*cmd, data).await;
     }
+    esp_println::println!("display: x3 busy post-init high={:?}", epd.busy_is_high());
 
     // UC8253 has no auto RAM clear; whiten both planes so the first
     // differential diffs against white rather than power-on garbage.
@@ -50,6 +56,7 @@ pub(crate) async fn init_panel(epd: &mut Epd) {
     let _ = fill_plane(epd, CMD_DTM2, 0xFF).await;
 
     SCREEN_POWERED.store(false, Ordering::Relaxed);
+    esp_println::println!("display: x3 init done");
 }
 
 pub(crate) async fn flush(
@@ -61,6 +68,16 @@ pub(crate) async fn flush(
     mode: RefreshMode,
     prev_staged: bool,
 ) -> Result<(), SpiError> {
+    // With the pump off (fresh init or post-sleep) DTM1 no longer matches
+    // what the panel shows, so a differential fast turn would mis-drive.
+    // The reference upgrades that case to the absolute half scrub, which
+    // ignores DTM1 entirely.
+    let mode = if mode == RefreshMode::Fast && !SCREEN_POWERED.load(Ordering::Relaxed) {
+        RefreshMode::FastClean
+    } else {
+        mode
+    };
+    esp_println::println!("display: x3 flush {:?}", mode);
     match mode {
         RefreshMode::Full | RefreshMode::PowerDown => flush_full(epd, fb, tx_band).await,
         RefreshMode::Fast => flush_fast(epd, fb, prev_fb, tx_band, prev_staged).await,
@@ -86,12 +103,13 @@ async fn flush_full(
 
     // Sync DTM1 to the shown frame, then settle it with a silent fast pass.
     send_plane(epd, CMD_DTM1, fb, tx_band).await?;
+    epd.command(CMD_DATA_STOP, &[]).await?;
     let (fast_bank, fast_cdi) = bank_for(RefreshMode::Fast);
     load_bank(epd, fast_cdi, fast_bank).await?;
     send_plane(epd, CMD_DTM2, fb, tx_band).await?;
     refresh(epd, false).await?;
     send_plane(epd, CMD_DTM1, fb, tx_band).await?;
-    Ok(())
+    epd.command(CMD_DATA_STOP, &[]).await
 }
 
 /// Turbo differential page turn: DTM2 = new frame diffed against DTM1 = the
@@ -108,6 +126,7 @@ async fn flush_fast(
     load_bank(epd, cdi, bank).await?;
     if !prev_staged {
         send_plane(epd, CMD_DTM1, prev_fb, tx_band).await?;
+        epd.command(CMD_DATA_STOP, &[]).await?;
     }
     send_plane(epd, CMD_DTM2, fb, tx_band).await?;
     refresh(epd, false).await
@@ -136,13 +155,15 @@ pub(crate) async fn prestage_previous(
     fb: &Framebuffer,
     tx_band: &mut [u8; BAND_BYTES],
 ) -> Result<(), SpiError> {
-    send_plane(epd, CMD_DTM1, fb, tx_band).await
+    send_plane(epd, CMD_DTM1, fb, tx_band).await?;
+    epd.command(CMD_DATA_STOP, &[]).await
 }
 
 pub(crate) async fn sleep_panel(epd: &mut Epd) -> Result<(), SpiError> {
     if SCREEN_POWERED.load(Ordering::Relaxed) {
         epd.command(CMD_POWER_OFF, &[]).await?;
-        epd.wait_two_phase().await;
+        let (low, ms) = epd.wait_two_phase().await;
+        esp_println::println!("display: x3 POF busy_low={} {}ms", low, ms);
         SCREEN_POWERED.store(false, Ordering::Relaxed);
     }
     epd.command(CMD_DEEP_SLEEP, &[DEEP_SLEEP_CHECK]).await
@@ -151,14 +172,31 @@ pub(crate) async fn sleep_panel(epd: &mut Epd) -> Result<(), SpiError> {
 /// Power the charge pump if needed (or unconditionally when `force`, as a
 /// full refresh does), fire the refresh, and wait out the two-phase BUSY.
 /// The panel is left powered for the next turn.
+///
+/// Bring-up telemetry: `busy_low=false` on the DRF line means the
+/// controller never went busy — the refresh command was ignored, which
+/// points at an incomplete RAM write or rejected init rather than the
+/// waveform.
 async fn refresh(epd: &mut Epd, force: bool) -> Result<(), SpiError> {
     if force || !SCREEN_POWERED.load(Ordering::Relaxed) {
         epd.command(CMD_POWER_ON, &[]).await?;
-        epd.wait_two_phase().await;
+        let (low, ms) = epd.wait_two_phase().await;
+        esp_println::println!(
+            "display: x3 PON busy_low={} {}ms level_high={:?}",
+            low,
+            ms,
+            epd.busy_is_high()
+        );
         SCREEN_POWERED.store(true, Ordering::Relaxed);
     }
     epd.command(CMD_DISPLAY_REFRESH, &[]).await?;
-    epd.wait_two_phase().await;
+    let (low, ms) = epd.wait_two_phase().await;
+    esp_println::println!(
+        "display: x3 DRF busy_low={} {}ms level_high={:?}",
+        low,
+        ms,
+        epd.busy_is_high()
+    );
     Ok(())
 }
 
@@ -175,7 +213,11 @@ async fn load_bank(epd: &mut Epd, cdi0: u8, bank: &LutBank) -> Result<(), SpiErr
 
 /// Stream one framebuffer into a RAM plane, band by band, in the panel's
 /// row order (the shared band transform applies the X3's vertical flip).
-/// Terminated with DATA_STOP as the controller expects.
+///
+/// Deliberately does NOT send DATA_STOP: the hardware-proven reference
+/// never puts one between a DTM2 write and the refresh that displays it —
+/// only after DTM1 syncs and white fills. Callers add it where the
+/// reference does.
 async fn send_plane(
     epd: &mut Epd,
     ram_cmd: u8,
@@ -194,8 +236,7 @@ async fn send_plane(
         y += BAND_ROWS;
     }
     epd.end_ram_write();
-    result?;
-    epd.command(CMD_DATA_STOP, &[]).await
+    result
 }
 
 /// Fill a RAM plane with a constant byte (0xFF = white), row by row.

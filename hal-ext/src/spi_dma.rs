@@ -1,4 +1,4 @@
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
 use embedded_hal_async::spi::SpiBus;
@@ -93,15 +93,28 @@ where
     /// edge first (bounded to 1 s — a refresh so quick it never shows LOW
     /// has already finished, so proceed), then for the return to HIGH.
     /// Mirrors CrossPoint's `BusyPolarity::X3TwoPhase` poll.
-    pub async fn wait_two_phase(&mut self) {
+    ///
+    /// Returns `(saw_low, elapsed_ms)` so callers can log whether the
+    /// controller actually went busy — a command that never drops BUSY was
+    /// ignored, which is the difference between "refresh ran invisibly"
+    /// and "refresh never happened" during bring-up.
+    pub async fn wait_two_phase(&mut self) -> (bool, u64) {
+        let start = Instant::now();
         let saw_low = embassy_time::with_timeout(Duration::from_secs(1), self.busy.wait_for_low())
             .await
             .is_ok();
         if !saw_low {
-            return;
+            return (false, start.elapsed().as_millis());
         }
         let _ =
             embassy_time::with_timeout(Duration::from_secs(30), self.busy.wait_for_high()).await;
+        (true, start.elapsed().as_millis())
+    }
+
+    /// Raw BUSY level sample, for bring-up probes that need the idle level
+    /// rather than an edge wait (`None` if the pin read errors).
+    pub fn busy_is_high(&mut self) -> Option<bool> {
+        self.busy.is_high().ok()
     }
 
     pub fn deselect_display(&mut self) {
