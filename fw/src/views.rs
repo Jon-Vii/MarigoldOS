@@ -77,7 +77,7 @@ pub(crate) fn render_sleep_blank(fb: &mut Framebuffer) {
     draw_text_centered_truncated_local(
         fb,
         literata(FontStyle::Regular),
-        "\u{00B7} asleep \u{00B7}",
+        "MarigoldOS",
         0,
         display::WIDTH as i16,
         display::HEIGHT as i16 / 2,

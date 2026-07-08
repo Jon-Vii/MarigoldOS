@@ -140,14 +140,6 @@ pub fn render_sleep(fb: &mut Framebuffer, request: RenderRequest, model: &UiRend
         SLEEP_COLOPHON_MAX_W,
     );
 
-    draw_font_centered_fit(
-        fb,
-        literata_small(FontStyle::Regular),
-        "\u{00B7} asleep \u{00B7}",
-        400,
-        456,
-        600,
-    );
     mirror_framebuffer_long_axis(fb);
 }
 
