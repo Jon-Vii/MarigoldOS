@@ -11,7 +11,7 @@ use crate::{
     qr_generated, UiLibraryStatus, UiOrientation, UiRefreshPolicy, UiShell, UiSyncStatus,
     UiTocItem, UiView,
 };
-use display::fb::Framebuffer;
+use display::fb::{FbFrame, Framebuffer};
 use display::font::{
     draw_text, literata, literata_display, literata_small, measure_text, BitmapFont, FontStyle,
 };
@@ -60,6 +60,11 @@ const TITLE_LEADING: i16 = 54;
 #[derive(Clone, Copy)]
 struct ShellLayout {
     mirrored: bool,
+    portrait: bool,
+    /// Drawing-frame height: the panel's long axis stands upright in
+    /// portrait, so vertical furniture (footer, key rail) hangs off this
+    /// rather than the panel HEIGHT constant.
+    frame_height: i16,
     content_x: i16,
     content_right: i16,
     colophon_right: i16,
@@ -71,13 +76,31 @@ impl ShellLayout {
         match orientation {
             UiOrientation::LandscapeButtonsTop => Self {
                 mirrored: true,
+                portrait: false,
+                frame_height: HEIGHT as i16,
                 content_x: WIDTH as i16 - CONTENT_RIGHT,
                 content_right: WIDTH as i16 - CONTENT_X,
                 colophon_right: WIDTH as i16 - (COLOPHON_RIGHT - CONTENT_RIGHT),
                 heading_cx: WIDTH as i16 - HEADING_CX,
             },
+            UiOrientation::PortraitButtonsLeft | UiOrientation::PortraitButtonsRight => {
+                // The margin rail moves to the bottom edge beside the front
+                // buttons, so content spans the frame's full (short) width.
+                let width = FbFrame::Portrait.width() as i16;
+                Self {
+                    mirrored: false,
+                    portrait: true,
+                    frame_height: FbFrame::Portrait.height() as i16,
+                    content_x: 44,
+                    content_right: width - 36,
+                    colophon_right: width - 24,
+                    heading_cx: width / 2,
+                }
+            }
             _ => Self {
                 mirrored: false,
+                portrait: false,
+                frame_height: HEIGHT as i16,
                 content_x: CONTENT_X,
                 content_right: CONTENT_RIGHT,
                 colophon_right: COLOPHON_RIGHT,
@@ -95,6 +118,16 @@ impl ShellLayout {
             self.content_right + 22
         } else {
             self.content_x - 32
+        }
+    }
+
+    /// Footer baseline: the panel-bottom corner line in landscape; lifted
+    /// above the bottom key rail in portrait.
+    const fn footer_y(self) -> i16 {
+        if self.portrait {
+            self.frame_height - 100
+        } else {
+            FOOTER_Y
         }
     }
 }
@@ -125,7 +158,14 @@ fn render_home(fb: &mut Framebuffer, shell: &UiShell<'_>) {
     dash_key(fb, layout, 3, "settings", false);
 
     // Long titles wrap to a second line that grows upward, keeping the
-    // author/rule/colophon furniture (and one-line titles) fixed.
+    // author/rule/colophon furniture (and one-line titles) fixed. The
+    // portrait title page drops its block deeper into the taller leaf
+    // (the same three-eighths position), keeping the block's own leading.
+    let title_y = if layout.portrait {
+        layout.frame_height * 3 / 8
+    } else {
+        180
+    };
     let title_font = literata_display();
     let (first, second) = wrap_title(
         title_font,
@@ -133,17 +173,17 @@ fn render_home(fb: &mut Framebuffer, shell: &UiShell<'_>) {
         layout.content_width() as u16,
     );
     if second.is_empty() {
-        draw_text(fb, title_font, first, layout.content_x, 180, false);
+        draw_text(fb, title_font, first, layout.content_x, title_y, false);
     } else {
         draw_text(
             fb,
             title_font,
             first,
             layout.content_x,
-            180 - TITLE_LEADING,
+            title_y - TITLE_LEADING,
             false,
         );
-        draw_text(fb, title_font, second, layout.content_x, 180, false);
+        draw_text(fb, title_font, second, layout.content_x, title_y, false);
     }
     if !shell.active_book.author.is_empty() {
         ls_caps(
@@ -151,7 +191,7 @@ fn render_home(fb: &mut Framebuffer, shell: &UiShell<'_>) {
             literata_small(FontStyle::Regular),
             shell.active_book.author,
             layout.content_x,
-            222,
+            title_y + 42,
             3,
         );
     }
@@ -161,7 +201,7 @@ fn render_home(fb: &mut Framebuffer, shell: &UiShell<'_>) {
     } else {
         shell.active_book.progress_permille
     };
-    progress_rule(fb, layout.content_x, 280, 240, permille);
+    progress_rule(fb, layout.content_x, title_y + 100, 240, permille);
 
     // Colophon: the chapter name alone, in the book's italic voice —
     // the progress rule already answers "how far". Roman numeral
@@ -172,7 +212,7 @@ fn render_home(fb: &mut Framebuffer, shell: &UiShell<'_>) {
         shell.chapter,
         shell.chapter_title,
         layout.content_x,
-        312,
+        title_y + 132,
         layout.colophon_right - layout.content_x,
     );
 
@@ -524,7 +564,7 @@ fn render_wireless(fb: &mut Framebuffer, shell: &UiShell<'_>) {
     dash_unused(fb, layout, 3);
     heading(fb, layout, "Wireless");
 
-    let hint_y = 280;
+    let hint_y = if layout.portrait { 330 } else { 280 };
     match shell.sync_status {
         UiSyncStatus::NotConfigured => {
             centered_note(fb, layout, "no wi-fi network saved yet");
@@ -697,6 +737,25 @@ fn text_in(buf: &[u8], len: usize) -> &str {
 /// An em-dash faces the physical button; the label is letterspaced
 /// small caps, bold for the screen's one primary action.
 fn dash_key(fb: &mut Framebuffer, layout: ShellLayout, slot: usize, label: &str, primary: bool) {
+    let style = if primary {
+        FontStyle::Bold
+    } else {
+        FontStyle::Regular
+    };
+    let label_font = literata_small(style);
+    if layout.portrait {
+        let cx = portrait_key_dash(fb, layout, slot);
+        let width = ls_width(label_font, label, 2);
+        ls_caps(
+            fb,
+            label_font,
+            label,
+            cx - width / 2,
+            portrait_key_label_y(layout, slot),
+            2,
+        );
+        return;
+    }
     let y = KEY_YS[slot];
     let dash_font = literata(FontStyle::Regular);
     let dash = "\u{2014}";
@@ -706,12 +765,6 @@ fn dash_key(fb: &mut Framebuffer, layout: ShellLayout, slot: usize, label: &str,
         KEY_DASH_X
     };
     draw_text(fb, dash_font, dash, dash_x, y + 8, false);
-    let style = if primary {
-        FontStyle::Bold
-    } else {
-        FontStyle::Regular
-    };
-    let label_font = literata_small(style);
     if layout.mirrored {
         let width = ls_width(label_font, label, 2);
         ls_caps(fb, label_font, label, dash_x - 24 - width, y + 6, 2);
@@ -722,6 +775,10 @@ fn dash_key(fb: &mut Framebuffer, layout: ShellLayout, slot: usize, label: &str,
 
 /// An unused key keeps its bare dash: the mark stays, the word goes.
 fn dash_unused(fb: &mut Framebuffer, layout: ShellLayout, slot: usize) {
+    if layout.portrait {
+        portrait_key_dash(fb, layout, slot);
+        return;
+    }
     let dash_font = literata(FontStyle::Regular);
     let dash = "\u{2014}";
     let dash_x = if layout.mirrored {
@@ -730,6 +787,38 @@ fn dash_unused(fb: &mut Framebuffer, layout: ShellLayout, slot: usize) {
         KEY_DASH_X
     };
     draw_text(fb, dash_font, dash, dash_x, KEY_YS[slot] + 8, false);
+}
+
+/// Portrait margin keys: the front-button column lies along the bottom
+/// bezel, so each slot's em-dash sits on one line hugging that edge,
+/// centered on its physical button (the same panel positions KEY_YS marks
+/// in landscape). Returns the slot's center x for the label.
+fn portrait_key_dash(fb: &mut Framebuffer, layout: ShellLayout, slot: usize) -> i16 {
+    let cx = KEY_YS[slot];
+    let dash_font = literata(FontStyle::Regular);
+    let dash = "\u{2014}";
+    let dash_w = measure_text(dash_font, dash) as i16;
+    draw_text(
+        fb,
+        dash_font,
+        dash,
+        cx - dash_w / 2,
+        layout.frame_height - 10,
+        false,
+    );
+    cx
+}
+
+/// The four slots sit 80px apart — too tight for letterspaced caps side
+/// by side — so labels stagger across two baselines: outer slots (Back,
+/// Previous) high, inner slots (Confirm, Next) low, each centered over
+/// its own dash.
+fn portrait_key_label_y(layout: ShellLayout, slot: usize) -> i16 {
+    if slot % 2 == 0 {
+        layout.frame_height - 56
+    } else {
+        layout.frame_height - 28
+    }
 }
 
 fn heading(fb: &mut Framebuffer, layout: ShellLayout, text: &str) {
@@ -865,13 +954,10 @@ fn selection_arrow(fb: &mut Framebuffer, layout: ShellLayout, y: i16) {
 }
 
 fn centered_note(fb: &mut Framebuffer, layout: ShellLayout, text: &str) {
-    draw_text_centered(
-        fb,
-        literata(FontStyle::Italic),
-        text,
-        layout.heading_cx,
-        230,
-    );
+    // The taller portrait page carries its note a little further down to
+    // keep it in the same optical position under the heading rule.
+    let y = if layout.portrait { 280 } else { 230 };
+    draw_text_centered(fb, literata(FontStyle::Italic), text, layout.heading_cx, y);
 }
 
 /// "– n of m –" centered on the content column.
@@ -889,7 +975,7 @@ fn position_footer(fb: &mut Framebuffer, layout: ShellLayout, current: usize, to
         literata_small(FontStyle::Regular),
         label,
         layout.heading_cx,
-        FOOTER_Y,
+        layout.footer_y(),
     );
 }
 
@@ -900,7 +986,19 @@ fn draw_battery_percent(fb: &mut Framebuffer, layout: ShellLayout, percent: u8) 
     push_str(&mut buf, &mut cursor, "%");
     let label = core::str::from_utf8(&buf[..cursor]).unwrap_or("");
     let small = literata_small(FontStyle::Regular);
-    if layout.mirrored {
+    if layout.portrait {
+        // The bottom corners belong to the key rail; the readout tucks
+        // into the content column's right edge on the footer line.
+        let width = measure_text(small, label) as i16;
+        draw_text(
+            fb,
+            small,
+            label,
+            layout.content_right - width,
+            layout.footer_y(),
+            false,
+        );
+    } else if layout.mirrored {
         draw_text(
             fb,
             small,
@@ -1030,7 +1128,7 @@ fn orientation_label(orientation: UiOrientation) -> &'static str {
     match orientation {
         UiOrientation::LandscapeButtonsBottom => "buttons down",
         UiOrientation::LandscapeButtonsTop => "buttons up",
-        UiOrientation::PortraitButtonsLeft | UiOrientation::PortraitButtonsRight => "buttons down",
+        UiOrientation::PortraitButtonsLeft | UiOrientation::PortraitButtonsRight => "portrait",
     }
 }
 

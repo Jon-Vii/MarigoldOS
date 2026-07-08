@@ -110,20 +110,50 @@ fn sync_error_label(error: SyncError) -> &'static str {
 pub fn render_sleep(fb: &mut Framebuffer, request: RenderRequest, model: &UiRenderModel<'_>) {
     fb.set_frame(fb_frame(request.orientation));
     fb.clear(true);
+
+    // Centered ceremonial furniture, sized to the frame: the landscape
+    // plate keeps its historical 800-wide geometry (including the X3's
+    // 400-centered block); the portrait plate narrows to the upright leaf
+    // and drops the block deeper into it.
+    let portrait = fb.frame_width() < fb.frame_height();
+    let cx = if portrait {
+        fb.frame_width() as i16 / 2
+    } else {
+        400
+    };
+    let max_w = if portrait {
+        fb.frame_width() as i16 - 60
+    } else {
+        720
+    };
+    let title_y = if portrait {
+        fb.frame_height() as i16 * 3 / 7
+    } else {
+        204
+    };
+
     let title_font = literata_display();
-    let (first, second) = crate::render::wrap_title(title_font, model.active_book.title, 720);
+    let (first, second) =
+        crate::render::wrap_title(title_font, model.active_book.title, max_w as u16);
     if second.is_empty() {
-        draw_font_centered_fit(fb, title_font, first, 400, 204, 720);
+        draw_font_centered_fit(fb, title_font, first, cx, title_y, max_w as u16);
     } else {
         // Two-line titles grow upward so the author/rule furniture
         // below keeps its place, mirroring the home title page.
-        draw_font_centered_fit(fb, title_font, first, 400, 204 - 54, 720);
-        draw_font_centered_fit(fb, title_font, second, 400, 204, 720);
+        draw_font_centered_fit(fb, title_font, first, cx, title_y - 54, max_w as u16);
+        draw_font_centered_fit(fb, title_font, second, cx, title_y, max_w as u16);
     }
     if !model.active_book.author.is_empty() {
         let caps = literata_small(FontStyle::Regular);
         let width = crate::render::ls_width(caps, model.active_book.author, 3);
-        crate::render::ls_caps(fb, caps, model.active_book.author, 400 - width / 2, 246, 3);
+        crate::render::ls_caps(
+            fb,
+            caps,
+            model.active_book.author,
+            cx - width / 2,
+            title_y + 42,
+            3,
+        );
     }
 
     let permille = if request.page_count > 1 {
@@ -132,26 +162,26 @@ pub fn render_sleep(fb: &mut Framebuffer, request: RenderRequest, model: &UiRend
     } else {
         model.active_book.progress_permille
     };
-    crate::render::progress_rule(fb, 280, 302, 240, permille);
+    crate::render::progress_rule(fb, cx - 120, title_y + 98, 240, permille);
 
-    // The sleep colophon is centered on the full 800px panel, so it can run
-    // wider than Home's left-column colophon before a long chapter name needs
-    // truncating.
-    const SLEEP_COLOPHON_MAX_W: i16 = 720;
+    // The sleep colophon is centered on the full frame width, so it can run
+    // wider than Home's left-column colophon before a long chapter name
+    // needs truncating.
+    let colophon_max_w = max_w;
     let colophon_w = crate::render::chapter_colophon_width(
         model.chapters,
         request.chapter,
         model.chapter_title,
-        SLEEP_COLOPHON_MAX_W,
+        colophon_max_w,
     );
     crate::render::draw_chapter_colophon(
         fb,
         model.chapters,
         request.chapter,
         model.chapter_title,
-        400 - colophon_w / 2,
-        340,
-        SLEEP_COLOPHON_MAX_W,
+        cx - colophon_w / 2,
+        title_y + 136,
+        colophon_max_w,
     );
 }
 
