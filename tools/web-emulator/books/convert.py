@@ -36,6 +36,13 @@ def normalize(text: str) -> str:
         ("“", '"'), ("”", '"'), ("‘", "'"), ("’", "'"),
         ("Æ", "Ae"), ("æ", "ae"), ("Œ", "Oe"), ("œ", "oe"),
         ("…", "..."), ("–", "-"), (" ", " "),
+        ("—", "--"),
+        ("ê", "e"), ("é", "e"), ("è", "e"), ("ë", "e"), ("â", "a"),
+        ("à", "a"), ("ô", "o"), ("î", "i"), ("ç", "c"), ("ï", "i"),
+        ("ü", "u"), ("ñ", "n"), ("«", '"'), ("»", '"'),
+        # This Pegana edition renders the macron'd river names Eimes,
+        # Zanes, Segastrion with stray glyphs; fold them to plain vowels.
+        ("Î", "e"), ("‰", "a"), ("·", "a"),
         ("_", ""),  # PG italics markers
     ]:
         text = text.replace(a, b)
@@ -162,10 +169,189 @@ def aesop(count: int = 40) -> None:
     print(f"aesop: {fables} fables")
 
 
+def cap_first_alpha(word: str) -> str:
+    """Capitalize the first letter, and any letter after a hyphen, so
+    'anglo-french' -> 'Anglo-French' and '"thunder' -> '"Thunder'."""
+    out = []
+    cap_next = True
+    for ch in word:
+        if cap_next and ch.isalpha():
+            out.append(ch.upper())
+            cap_next = False
+        else:
+            out.append(ch)
+        if ch == "-":
+            cap_next = True
+    return "".join(out)
+
+
+def head_case(text: str) -> str:
+    """Title-case a heading, capitalizing through leading quotes/punctuation."""
+    small = SMALL_WORDS | {"or", "nor", "but", "as"}
+    words = text.lower().split()
+    out = []
+    for index, word in enumerate(words):
+        if 0 < index < len(words) - 1 and word in small:
+            out.append(word)
+        else:
+            out.append(cap_first_alpha(word))
+    return " ".join(out)
+
+
+def emit_heading(out: list[str], title: str) -> None:
+    title = title.rstrip(". ")
+    if out and out[-1] != "":
+        out.append("")
+    out.append(f"# {title}")
+    out.append("")
+
+
+def marker_book(name: str, marker: "re.Pattern", book_re) -> None:
+    """A book whose chapters are a numeral line followed by a title line.
+
+    `book_re` (optional) matches a 'BOOK ONE' part divider whose subtitle is
+    the next line; used by The War of the Worlds' two-part structure.
+    """
+    lines = body(f"{SRC}/{name}.txt")
+    out: list[str] = []
+    par: list[str] = []
+    started = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if book_re and book_re.match(line.strip()):
+            sub = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            flush(par, out)
+            emit_heading(out, f"{head_case(line.strip())}: {head_case(sub)}"
+                         if sub else head_case(line.strip()))
+            started = True
+            i += 2
+            continue
+        if marker.match(line):
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            title = head_case(lines[j].strip()) if j < len(lines) else ""
+            flush(par, out)
+            emit_heading(out, title)
+            started = True
+            i = j + 1
+            continue
+        if not started:
+            i += 1
+            continue
+        if not line.strip():
+            flush(par, out)
+        else:
+            par.append(line.strip())
+        i += 1
+    flush(par, out)
+    text = "\n".join(out)
+    text = "# " + text.split("# ", 1)[1]      # drop front matter/TOC
+    open(f"{OUT}/{name}.txt", "w").write(text.rstrip() + "\n")
+
+
+def pegana() -> None:
+    """All-caps standalone lines are headings; consecutive ones merge."""
+    lines = body(f"{SRC}/pegana.txt")
+    caps = re.compile(r"^[A-Z][A-Z'’ .-]*[A-Z.]$")
+    out: list[str] = []
+    par: list[str] = []
+    started = False
+    i = next(k for k, l in enumerate(lines) if l.strip() == "PREFACE")
+    while i < len(lines):
+        stripped = lines[i].strip()
+        is_head = (
+            caps.match(stripped) is not None
+            and 2 < len(stripped) < 60
+            and (i == 0 or not lines[i - 1].strip())
+        )
+        if is_head:
+            parts = [stripped]
+            j = i + 1
+            while j < len(lines) and lines[j].strip() and caps.match(lines[j].strip()):
+                parts.append(lines[j].strip())
+                j += 1
+            flush(par, out)
+            emit_heading(out, head_case(" ".join(parts)))
+            started = True
+            i = j
+            continue
+        if not started:
+            i += 1
+            continue
+        if not stripped:
+            flush(par, out)
+        else:
+            par.append(stripped)
+        i += 1
+    flush(par, out)
+    text = "\n".join(out)
+    text = "# " + text.split("# ", 1)[1]
+    open(f"{OUT}/pegana.txt", "w").write(text.rstrip() + "\n")
+
+
+def lastmen() -> None:
+    """Stapledon: indented `<roman> Title` chapters and `N. TITLE` sections.
+
+    Underscores are already stripped by normalize, so chapter headings read
+    `      I Balkan Europe`. Starts at the in-universe Introduction, skipping
+    the Contents and authorial Preface like the other books drop front matter.
+    """
+    lines = body(f"{SRC}/lastmen.txt")
+    chap = re.compile(r"^ {4,}([IVXL]+) ([A-Z][A-Za-z].*)$")
+    sect = re.compile(r"^ {4,}\d+\. ([A-Z].*)$")
+    spaced = re.compile(r"^ {4,}([A-Z] )+[A-Z],?.*$")     # 'T H E   C H R O N I C L E'
+    intro = re.compile(r"^ {4,}Introduction\s*$")
+    out: list[str] = []
+    par: list[str] = []
+    i = next(k for k, l in enumerate(lines) if intro.match(l))
+    emit_heading(out, "Introduction")
+    i += 1
+    while i < len(lines):
+        line = lines[i]
+        if intro.match(line) or spaced.match(line):
+            i += 1
+            continue
+        m = chap.match(line)
+        if m:
+            flush(par, out)
+            emit_heading(out, head_case(m.group(2)))
+            i += 1
+            continue
+        m = sect.match(line)
+        if m:
+            flush(par, out)
+            emit_heading(out, head_case(m.group(1)))
+            i += 1
+            continue
+        stripped = line.strip()
+        if not stripped:
+            flush(par, out)
+        elif stripped == "By One of the Last Men":
+            pass                                          # intro subtitle, drop
+        else:
+            par.append(stripped)
+        i += 1
+    flush(par, out)
+    text = "\n".join(out)
+    text = "# " + text.split("# ", 1)[1]
+    open(f"{OUT}/lastmen.txt", "w").write(text.rstrip() + "\n")
+
+
+ROMAN_LINE = re.compile(r"^\s*[IVXLC]+\.\s*$")            # ' I.'  'II.'
+CHAPTER_LINE = re.compile(r"^CHAPTER\s+[IVXLC]+\s*$")     # 'CHAPTER I'
+BOOK_LINE = re.compile(r"^BOOK\s+(ONE|TWO|THREE)$")
+
 alice()
 carol()
 aesop()
-for name in ["alice", "carol", "aesop"]:
+pegana()
+marker_book("timemachine", ROMAN_LINE, None)
+marker_book("warworlds", ROMAN_LINE, BOOK_LINE)
+marker_book("mars", CHAPTER_LINE, None)
+lastmen()
+for name in ["alice", "carol", "aesop", "pegana", "timemachine", "warworlds", "mars", "lastmen"]:
     text = open(f"{OUT}/{name}.txt").read()
     chapters = text.count("\n# ") + text.startswith("# ")
     print(name, len(text), "bytes,", chapters, "chapters")

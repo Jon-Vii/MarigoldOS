@@ -17,7 +17,7 @@ pub struct BookSource {
     pub text: &'static str,
 }
 
-pub const SHELF: [BookSource; 3] = [
+pub const SHELF: [BookSource; 8] = [
     BookSource {
         title: "Alice's Adventures in Wonderland",
         author: "Lewis Carroll",
@@ -32,6 +32,31 @@ pub const SHELF: [BookSource; 3] = [
         title: "Aesop's Fables",
         author: "Townsend translation",
         text: include_str!("../books/aesop.txt"),
+    },
+    BookSource {
+        title: "The Gods of Pegana",
+        author: "Lord Dunsany",
+        text: include_str!("../books/pegana.txt"),
+    },
+    BookSource {
+        title: "The Time Machine",
+        author: "H. G. Wells",
+        text: include_str!("../books/timemachine.txt"),
+    },
+    BookSource {
+        title: "The War of the Worlds",
+        author: "H. G. Wells",
+        text: include_str!("../books/warworlds.txt"),
+    },
+    BookSource {
+        title: "A Princess of Mars",
+        author: "Edgar Rice Burroughs",
+        text: include_str!("../books/mars.txt"),
+    },
+    BookSource {
+        title: "Last and First Men",
+        author: "Olaf Stapledon",
+        text: include_str!("../books/lastmen.txt"),
     },
 ];
 
