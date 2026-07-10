@@ -16,6 +16,14 @@ rustflags = [
 [build]
 target = "riscv32imc-unknown-none-elf"
 
+[env]
+# Keep LLVM's .Lswitch.table.* lookup tables in flash (.rodata) instead of
+# copying them into .data at boot: ~3 KB of RAM handed back to the main
+# stack. Switch dispatch then reads through the flash cache; a miss inside
+# a flash-cache-suspended window (esp-storage NVM writes) adds latency,
+# expected to be unmeasurable (see the 2026-07-07 stack-headroom brainstorm).
+ESP_HAL_CONFIG_PLACE_SWITCH_TABLES_IN_RAM = "false"
+
 # Radio buffer trims moved to runtime: esp-radio dropped the old
 # ESP_WIFI_CONFIG_* compile-time options, so the kosync-session sizing now
 # lives in the ControllerConfig built in fw/src/tasks/wifi.rs.

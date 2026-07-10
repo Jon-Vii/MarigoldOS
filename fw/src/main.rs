@@ -112,7 +112,11 @@ pub static INPUT_START: Channel<CriticalSectionRawMutex, (), 1> = Channel::new()
 pub static INPUT_ENABLED: AtomicBool = AtomicBool::new(false);
 pub static LATEST_READER_REQUEST_ID: AtomicU32 = AtomicU32::new(0);
 pub static DISPLAY_COMMANDS: Channel<CriticalSectionRawMutex, DisplayCommand, 4> = Channel::new();
-pub static DISPLAY_EVENTS: Channel<CriticalSectionRawMutex, DisplayEvent, 16> = Channel::new();
+// 8 slots (270 B each) is enough for the cache-build burst case: required
+// events retry with library-event eviction on a full queue (see
+// send_required_display_event), so a shorter queue costs at most extra
+// retries, and the ~2.1 KB of .bss saved widens the main stack region.
+pub static DISPLAY_EVENTS: Channel<CriticalSectionRawMutex, DisplayEvent, 8> = Channel::new();
 pub static LIBRARY_EVENTS: Channel<CriticalSectionRawMutex, LibraryEvent, 8> = Channel::new();
 pub static STORAGE_COMMANDS: Channel<CriticalSectionRawMutex, StorageCommand, 4> = Channel::new();
 pub static POWER_EVENTS: Channel<CriticalSectionRawMutex, PowerEvent, 4> = Channel::new();
