@@ -1,8 +1,8 @@
 # Custom fonts
 
-MarigoldOS supports one optional custom reader typeface. Users do not copy a raw
+CalendulaOS supports one optional custom reader typeface. Users do not copy a raw
 TTF or OTF file to the device; the font first has to be converted into
-MarigoldOS' bounded `CUSTOM.FNT` format.
+CalendulaOS' bounded `CUSTOM.FNT` format.
 
 When a valid custom font pack is installed, Settings shows it as another
 Typeface choice using the display name stored in the pack. If no valid pack is

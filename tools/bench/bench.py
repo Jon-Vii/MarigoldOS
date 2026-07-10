@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Development bench harness for MarigoldOS hardware runs.
+"""Development bench harness for CalendulaOS hardware runs.
 
 The harness deliberately starts as a serial log collector and parser. The
 firmware has no interactive command channel, so hardware suites are guided:

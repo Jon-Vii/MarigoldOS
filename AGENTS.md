@@ -1,4 +1,4 @@
-# xteink-x4-os Agent Notes
+# CalendulaOS Agent Notes
 
 ## Agent skills
 

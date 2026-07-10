@@ -3,21 +3,21 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MarigoldOS · lightweight firmware for the Xteink X3 and X4</title>
-<link rel="icon" href="marigold.svg">
+<title>CalendulaOS · lightweight firmware for the Xteink X3 and X4</title>
+<link rel="icon" href="calendula.svg">
 <meta name="description" content="Lightweight open firmware for the Xteink X3 and X4 e-readers. Try it in your browser, then flash it to your reader over USB or from an SD card.">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://jon-vii.github.io/marigold-os/">
-<meta property="og:title" content="MarigoldOS · lightweight firmware for the Xteink X3 and X4">
+<meta property="og:url" content="https://chongfun.github.io/calendula-os/">
+<meta property="og:title" content="CalendulaOS · lightweight firmware for the Xteink X3 and X4">
 <meta property="og:description" content="Lightweight open firmware for the Xteink X3 and X4 e-readers. Try it in your browser, then flash it to your reader over USB or from an SD card.">
-<meta property="og:image" content="https://jon-vii.github.io/marigold-os/home.png">
+<meta property="og:image" content="https://chongfun.github.io/calendula-os/home.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="760">
-<meta property="og:image:alt" content="The MarigoldOS site showing the browser emulator home menu with Alice's Adventures in Wonderland selected">
+<meta property="og:image:alt" content="The CalendulaOS site showing the browser emulator home menu with Alice's Adventures in Wonderland selected">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="MarigoldOS · lightweight firmware for the Xteink X3 and X4">
+<meta name="twitter:title" content="CalendulaOS · lightweight firmware for the Xteink X3 and X4">
 <meta name="twitter:description" content="Lightweight open firmware for the Xteink X3 and X4 e-readers. Try it in your browser, then flash it to your reader over USB or from an SD card.">
-<meta name="twitter:image" content="https://jon-vii.github.io/marigold-os/home.png">
+<meta name="twitter:image" content="https://chongfun.github.io/calendula-os/home.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&display=swap" rel="stylesheet">
@@ -25,10 +25,11 @@
   :root {
     --paper: #eeece2;
     --ink: #161614;
-    /* The desk is dark enough that the Mist Gray shell reads as an
-       object on it, not a patch of the same page. */
-    --desk: #e6ddc9;
-    --desk-deep: #d6cbb1;
+    /* GitHub's Primer canvas, flat: README hero screenshots of this page
+       blend seamlessly into github.com in both themes. The shell reads as
+       an object via its edge ring and shadows, not desk contrast. */
+    --desk: #ffffff;
+    --desk-deep: #f6f8fa;
     --bezel: #d9d7d2;
     --bezel-edge: #efeeeb;
     --bezel-line: #a3a099;
@@ -44,8 +45,8 @@
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --desk: #221d15;
-      --desk-deep: #14100a;
+      --desk: #0d1117;
+      --desk-deep: #010409;
       --label: #8a8375;
     }
   }
@@ -355,15 +356,15 @@
   :root{ --card:#f4f0e7; --well:#ece6d7; --line:#a29a86; }
 
   /* ---------------------------------------------- warm landing (minimal) */
-  /* accent retuned to the vivid-orange (o1) marigold: core #cf5f0c, petal #f5871c */
-  :root{ --prose:#433d31; --mari:#cf5f0c; --mari-btn1:#f5871c; --mari-btn2:#de5f10; --mari-edge:#a54c08; }
-  @media (prefers-color-scheme: dark){ :root{ --prose:#cdc5b3; --mari:#f0851c; --mari-btn1:#f5871c; --mari-btn2:#de5f10; --mari-edge:#a54c08; --card:#241f17; --well:#191510; --line:#463f31; } }
-  body{ background:
-    radial-gradient(100% 60% at 50% -8%, rgba(201,138,43,.13), transparent 55%),
-    radial-gradient(125% 95% at 50% 0%, var(--desk) 52%, var(--desk-deep) 100%); }
+  /* deep-amber calendula accent, seeded from the LED (#c98a2b); button text is ink, not white */
+  :root{ --prose:#433d31; --cal:#a16207; --cal-btn1:#e8b40c; --cal-btn2:#c98a2b; --cal-edge:#8a6200; }
+  @media (prefers-color-scheme: dark){ :root{ --prose:#cdc5b3; --cal:#f0b429; --cal-btn1:#e8b40c; --cal-btn2:#c98a2b; --cal-edge:#8a6200; --card:#241f17; --well:#191510; --line:#463f31; } }
+  /* Flat desk — any gradient or glow would seam against GitHub's canvas
+     in the README hero crops. */
+  body{ background: var(--desk); }
   header{ max-width:920px; align-items:center; }   /* line up with the device below; center logo + link */
   header a{ font-family:var(--body); font-size:14px; letter-spacing:0; text-transform:none; border-bottom:0; color:var(--label); }
-  header a:hover{ color:var(--mari); }
+  header a:hover{ color:var(--cal); }
   header .name{ font-family:var(--body); font-size:17px; color:inherit; letter-spacing:.01em; display:inline-flex; align-items:center; gap:9px; }
   header .name .mk{ width:34px; height:34px; }
   /* no hairline strokes in the page chrome - but the device + its key hints keep theirs */
@@ -375,16 +376,16 @@
   /* shared install shell + primary button (designs add their own layout) */
   .install{ width:min(640px,100%); margin:clamp(52px,9vw,96px) auto 0; text-align:center; }
   .install h2{ font-weight:400; font-size:clamp(25px,3.8vw,34px); letter-spacing:-.01em; }
-  .flashbtn{ display:inline-flex; align-items:center; gap:9px; font-family:var(--body); font-size:16px; color:#33220a; text-decoration:none;
-    background:linear-gradient(180deg,var(--mari-btn1),var(--mari-btn2)); border:0; border-radius:11px; padding:13px 28px;
-    box-shadow:0 2px 0 var(--mari-edge), 0 12px 24px -14px rgba(180,86,16,.85); transition:.14s; }
-  .flashbtn:hover{ transform:translateY(-1px); box-shadow:0 3px 0 var(--mari-edge), 0 16px 28px -14px rgba(180,86,16,.85); }
+  .flashbtn{ display:inline-flex; align-items:center; gap:9px; font-family:var(--body); font-size:16px; color:#161614; text-decoration:none;
+    background:linear-gradient(180deg,var(--cal-btn1),var(--cal-btn2)); border:0; border-radius:11px; padding:13px 28px;
+    box-shadow:0 2px 0 var(--cal-edge), 0 12px 24px -14px rgba(138,98,0,.85); transition:.14s; }
+  .flashbtn:hover{ transform:translateY(-1px); box-shadow:0 3px 0 var(--cal-edge), 0 16px 28px -14px rgba(138,98,0,.85); }
   .flashbtn .ver{ font-size:12.5px; opacity:.72; }
   .colophon .row a{ color:var(--label); }
   .foot{ width:min(620px,100%); margin:20px auto 0; padding-top:0; font-family:var(--mono);
     font-size:11.5px; color:var(--label); text-align:center; line-height:2; }
   .foot a{ color:var(--label); text-decoration:none; }
-  .foot a:hover{ color:var(--mari); }
+  .foot a:hover{ color:var(--cal); }
 
   /* device edges: soft mid-gray, a touch thicker - a matte edge, not a black hairline */
   .device{
@@ -412,29 +413,29 @@
       0 22px 50px -30px rgba(70,50,20,.5), 0 3px 8px -4px rgba(70,50,20,.13); }
   .stage + .stage{ margin-top:26px; }
   .stitle{ font-size:13px; color:var(--label); margin-bottom:12px; }
-  .stitle .no{ color:var(--mari); font-weight:600; margin-right:8px; }
+  .stitle .no{ color:var(--cal); font-weight:600; margin-right:8px; }
   .devs{ display:grid; grid-template-columns:1fr 1fr; gap:11px; }
   .dev{ font:inherit; text-align:left; color:inherit; cursor:pointer; transition:.14s;
     background:var(--well); border:0; border-radius:14px; padding:14px 16px; }
   .dev b{ display:block; font-weight:600; font-size:15px; margin-bottom:2px; }
   .dev span{ font-size:12.5px; color:var(--label); }
-  .dev:hover{ background:color-mix(in srgb,var(--mari) 9%,var(--well)); }
-  .dev.on{ background:color-mix(in srgb,var(--mari) 15%,var(--card));
-    box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--mari) 60%,transparent); }
+  .dev:hover{ background:color-mix(in srgb,var(--cal) 9%,var(--well)); }
+  .dev.on{ background:color-mix(in srgb,var(--cal) 15%,var(--card));
+    box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--cal) 60%,transparent); }
   .asset{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; padding:15px 16px; background:var(--well); border-radius:12px; margin-bottom:16px; }
   .asset .k{ display:block; font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--label); margin-bottom:4px; }
   .asset b{ font-weight:600; font-size:13.5px; font-family:var(--mono); }
   .status{ display:flex; align-items:center; gap:9px; font-size:13px; color:var(--prose); margin-bottom:18px; line-height:1.45; }
-  .status .dot{ flex:none; width:8px; height:8px; border-radius:50%; background:var(--mari); box-shadow:0 0 0 3px color-mix(in srgb,var(--mari) 22%,transparent); }
+  .status .dot{ flex:none; width:8px; height:8px; border-radius:50%; background:var(--cal); box-shadow:0 0 0 3px color-mix(in srgb,var(--cal) 22%,transparent); }
   .status.no .dot{ background:#b4632a; box-shadow:0 0 0 3px color-mix(in srgb,#b4632a 22%,transparent); }
   .acts{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .ghost{ font-family:var(--body); font-size:15px; color:var(--ink); text-decoration:none; background:var(--well); border-radius:12px; padding:12px 22px; transition:.14s; }
-  .ghost:hover{ color:var(--mari); background:color-mix(in srgb,var(--mari) 12%,var(--card)); }
-  .ghost.lead{ color:#33220a; background:color-mix(in srgb,var(--mari) 22%,var(--card)); }
+  .ghost:hover{ color:var(--cal); background:color-mix(in srgb,var(--cal) 12%,var(--card)); }
+  .ghost.lead{ color:#161614; background:color-mix(in srgb,var(--cal) 22%,var(--card)); }
   .flashbtn.off{ background:var(--well); color:var(--label); box-shadow:none; cursor:not-allowed; pointer-events:none; }
   .req{ font-size:12.5px; color:var(--label); margin-top:14px; line-height:1.55; }
   .devnote{ font-size:12.5px; color:var(--label); margin-top:6px; line-height:1.55; }
-  .devnote a{ color:var(--mari); text-decoration:none; }
+  .devnote a{ color:var(--cal); text-decoration:none; }
   .devnote a:hover{ text-decoration:underline; }
   .sdcard{ text-align:left; background:var(--card); border-radius:20px; padding:clamp(22px,3.4vw,30px); margin-top:14px;
     box-shadow:0 0 0 1px var(--line),
@@ -444,16 +445,16 @@
   .sdcard .txt{ font-size:14px; color:var(--prose); line-height:1.6; margin-bottom:15px; max-width:58ch; }
   .sdsteps{ display:grid; gap:9px; margin:0 0 17px; padding:0; }
   .sdsteps li{ list-style:none; display:flex; gap:11px; align-items:center; font-size:14px; color:var(--prose); }
-  .sdsteps .n{ flex:none; width:22px; height:22px; border-radius:50%; background:var(--well); color:var(--mari); font-size:12px; font-weight:600; display:grid; place-items:center; }
+  .sdsteps .n{ flex:none; width:22px; height:22px; border-radius:50%; background:var(--well); color:var(--cal); font-size:12px; font-weight:600; display:grid; place-items:center; }
   .dl2{ display:inline-block; font-size:14.5px; color:var(--ink); background:var(--well); border-radius:12px; padding:11px 20px; text-decoration:none; transition:.14s; }
-  .dl2:hover{ color:var(--mari); background:color-mix(in srgb,var(--mari) 12%,var(--card)); }
+  .dl2:hover{ color:var(--cal); background:color-mix(in srgb,var(--cal) 12%,var(--card)); }
   @media (prefers-color-scheme: dark) {
     .ghost,
     .dl2 {
       color: var(--prose);
     }
   }
-  .install .rel{ margin-top:20px; font-size:13px; } .install .rel a{ color:var(--mari); text-decoration:none; }
+  .install .rel{ margin-top:20px; font-size:13px; } .install .rel a{ color:var(--cal); text-decoration:none; }
   @media(max-width:520px){ .asset{ grid-template-columns:1fr 1fr; } .devs{ grid-template-columns:1fr; } }
 
   esp-web-install-button{ display:inline-flex; vertical-align:middle; }
@@ -462,19 +463,19 @@
 
   /* The inline FWUPDATE.BIN link fell back to the browser's default blue,
      which clashed with the warm palette; match the other prose links. */
-  .sdcard .txt a{ color:var(--mari); text-decoration:none; }
+  .sdcard .txt a{ color:var(--cal); text-decoration:none; }
   .sdcard .txt a:hover{ text-decoration:underline; }
 </style>
 </head>
 <body>
 
 <header>
-  <span class="name"><img class="mk" src="marigold.svg" alt=""> MarigoldOS</span>
-  <a href="https://github.com/Jon-Vii/marigold-os">GitHub</a>
+  <span class="name"><img class="mk" src="calendula.svg" alt=""> CalendulaOS</span>
+  <a href="https://github.com/chongfun/calendula-os">GitHub</a>
 </header>
 
 <div class="intro">
-  <h1>MarigoldOS</h1>
+  <h1>CalendulaOS</h1>
   <p class="lead">Lightweight firmware for the Xteink X3 and X4 e-readers.</p>
 </div><div class="device" id="device" aria-label="Simulated Xteink X4 e-reader">
   <div class="body">
@@ -516,13 +517,13 @@
 
 <main>
     <p>
-      The emulator above runs the app and rendering code of MarigoldOS,
+      The emulator above runs the app and rendering code of CalendulaOS,
       compiled to WebAssembly, in a simulated e-ink panel.
     </p>
   </main>
 
 <section class="install">
-  <h2>Flash MarigoldOS</h2>
+  <h2>Flash CalendulaOS</h2>
   <p class="sub">Install it onto your reader over USB, right from your browser.</p>
   <div class="flow">
     <div class="stage">
@@ -545,7 +546,7 @@
         <a class="ghost" href="#" id="dl">Download .bin</a>
       </div>
       <p class="req">Uses WebSerial, in Chrome or Edge on the desktop. Wake the reader to its home screen and connect it; after flashing, replug USB to boot.</p>
-      <p class="devnote">Prefer the command line? Download the .bin and flash it with esptool over USB. See the <a href="https://github.com/Jon-Vii/marigold-os/blob/main/docs/FLASHING.md">docs</a>.</p>
+      <p class="devnote">Prefer the command line? Download the .bin and flash it with esptool over USB. See the <a href="https://github.com/chongfun/calendula-os/blob/main/docs/FLASHING.md">docs</a>.</p>
     </div>
   </div>
 
@@ -558,7 +559,7 @@
       <li><span class="n">3</span> Power on holding <b>Power + Up</b> to flash.</li>
     </ul>
     <a class="dl2" href="#" id="sd">Download SD image &#8595;</a>
-    <p class="txt">Already running Marigold on an X4? Use <a href="https://github.com/Jon-Vii/marigold-os/releases/latest/download/FWUPDATE.BIN">FWUPDATE.BIN</a> instead and reboot normally.</p>
+    <p class="txt">Already running Calendula on an X4? Use <a href="https://github.com/Jon-Vii/marigold-os/releases/latest/download/FWUPDATE.BIN">FWUPDATE.BIN</a> instead and reboot normally.</p>
   </div>
 
   <p class="rel"><a href="https://github.com/Jon-Vii/marigold-os/releases/latest">v0.3.1 release notes &#8599;</a></p>
@@ -572,7 +573,7 @@
 </div>
 
 <footer class="foot">
-  MIT · <a href="https://github.com/Jon-Vii/marigold-os">GitHub</a> · <a href="#">Docs</a>
+  MIT · <a href="https://github.com/chongfun/calendula-os">GitHub</a> · <a href="#">Docs</a> · a fork of <a href="https://github.com/Jon-Vii/marigold-os">MarigoldOS</a>
 </footer>
 
 <script>

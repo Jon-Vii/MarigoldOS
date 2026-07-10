@@ -1,4 +1,4 @@
-# MarigoldOS architecture
+# CalendulaOS architecture
 
 This firmware is a bare-metal Rust reader OS for the Xteink X4 and X3 e-ink
 readers: ESP32-C3, monochrome e-paper panels, no PSRAM.

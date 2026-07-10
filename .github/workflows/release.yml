@@ -50,7 +50,7 @@ jobs:
             target/public-release/FWUPDATE.BIN \
             target/public-release/FWUPDX3.BIN \
             --title "${GITHUB_REF_NAME}" \
-            --notes "MarigoldOS ${GITHUB_REF_NAME} firmware images for Xteink X4 and X3."
+            --notes "CalendulaOS ${GITHUB_REF_NAME} firmware images for Xteink X4 and X3."
 
       - name: Publish release firmware to Pages
         env:

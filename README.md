@@ -1,15 +1,19 @@
-# MarigoldOS
+# CalendulaOS
 
-MarigoldOS is a lightweight, open-source firmware for the Xteink X4 and X3 e-readers.
+CalendulaOS is a lightweight, open-source firmware for the Xteink X4 and X3
+e-readers — a fork of [Jon-Vii's MarigoldOS](https://github.com/Jon-Vii/marigold-os).
 
 [![Flashing](https://img.shields.io/badge/Flashing-2b2b2b?style=flat)](docs/FLASHING.md)
 [![Custom fonts](https://img.shields.io/badge/Custom_fonts-2b2b2b?style=flat)](docs/CUSTOM_FONTS.md)
 [![Architecture](https://img.shields.io/badge/Architecture-2b2b2b?style=flat)](docs/ARCHITECTURE.md)
 
-![The MarigoldOS site showing the browser emulator home menu with Alice's Adventures in Wonderland selected](docs/home.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/home-dark.png">
+  <img alt="The CalendulaOS site showing the browser emulator home menu with Alice's Adventures in Wonderland selected" src="docs/home.png">
+</picture>
 
 If you'd like to explore the OS without flashing a device,
-[try the emulator](https://jon-vii.github.io/marigold-os/) in your browser — the
+[try the emulator](https://chongfun.github.io/calendula-os/) in your browser — the
 firmware's app and rendering code compiled to WebAssembly, with a simulated
 e-ink display and a selection of public-domain books.
 

@@ -11,7 +11,7 @@ TOOLCHAIN="${RUSTUP_TOOLCHAIN:-stable}"
 
 if ! command -v rustup >/dev/null 2>&1; then
   cat >&2 <<'EOF'
-error: rustup is required to build MarigoldOS firmware.
+error: rustup is required to build CalendulaOS firmware.
 
 Install Rust with rustup, then install this repo's firmware target:
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh

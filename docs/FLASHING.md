@@ -75,7 +75,7 @@ Produces local images in `target/release-images/`:
   stock OEM SD-card updater looks for. The OEM updater writes it to the app
   slot at `0x10000`, so it is an **app image, not a full-flash image**.
 - **`FWUPDATE.BIN`** — byte-identical to `firmware.bin`, under the filename
-  MarigoldOS itself looks for on the card root at boot.
+  CalendulaOS itself looks for on the card root at boot.
 - **`FWUPDX3.BIN`** — the X3 SD-card trigger filename.
 - **`full-flash*.bin`** — merged 16 MB images (bootloader + partition table +
   app) for local bench recovery on unlocked units only.
@@ -84,7 +84,7 @@ Tagged GitHub releases publish only the public app/SD assets:
 `firmware-x4.bin`, `firmware-x3.bin`, `update.bin`, `FWUPDATE.BIN`, and
 `FWUPDX3.BIN`. `firmware-x4.bin` is the release-time name for the default X4
 `target/release-images/firmware.bin`; `FWUPDATE.BIN` is the same X4 app image
-under Marigold's in-app updater trigger name.
+under Calendula's in-app updater trigger name.
 
 > [!CAUTION]
 > Never put `full-flash*.bin` on an SD card and never write it to `0x10000`. The
@@ -182,7 +182,7 @@ with no computer — this is what keeps a locked unit from being a one-way trip:
    flips `otadata` to select it (`proto::ota::plan_switch`), deletes
    `FWUPDATE.BIN` so it runs only once, and resets into the new firmware.
    On the first boot after any OTA-slot install (including CrossInk's
-   Settings -> SD firmware update flow), Marigold marks the selected `otadata`
+   Settings -> SD firmware update flow), Calendula marks the selected `otadata`
    entry valid before the reader starts, so rollback-enabled bootloaders do not
    return to the previous firmware on the next deep-sleep reset.
 
@@ -228,7 +228,7 @@ Implemented and verified on host tooling:
       — early boot rewrites an active `NEW`/`PENDING_VERIFY` select entry as
       `VALID`. This covers installs launched from CrossInk/CrossPoint's
       Settings -> SD firmware update path, where a rollback-enabled bootloader
-      may otherwise boot Marigold once and then return to CrossInk after sleep.
+      may otherwise boot Calendula once and then return to CrossInk after sleep.
 - [x] **Flash + otadata path validated on hardware** (2026-07-05, unlocked X4).
       A one-shot self-test (`fw::ota_update::run_selftest`, `ota-selftest`
       feature) copied the running image into the inactive slot with `esp-storage`

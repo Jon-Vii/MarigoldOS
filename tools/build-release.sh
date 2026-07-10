@@ -29,7 +29,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # STOCK_SD_IMAGE is the card-root filename the stock/OEM updater consumes.
-# IN_APP_SD_IMAGE is the trigger filename Marigold itself consumes on boot.
+# IN_APP_SD_IMAGE is the trigger filename Calendula itself consumes on boot.
 DEVICE="${1:-x4}"
 case "$DEVICE" in
   x4) FEATURES=(); SUFFIX=""; STOCK_SD_IMAGE=update.bin; IN_APP_SD_IMAGE=FWUPDATE.BIN ;;
@@ -68,7 +68,7 @@ espflash save-image "${common[@]}" "$ELF" "$FW"
 echo "==> $STOCK_SD_IMAGE (same app image, stock/OEM SD updater name)"
 cp "$FW" "$OUT/$STOCK_SD_IMAGE"
 if [[ "$IN_APP_SD_IMAGE" != "$STOCK_SD_IMAGE" ]]; then
-  echo "==> $IN_APP_SD_IMAGE (same app image, Marigold in-app SD updater name)"
+  echo "==> $IN_APP_SD_IMAGE (same app image, Calendula in-app SD updater name)"
   cp "$FW" "$OUT/$IN_APP_SD_IMAGE"
 fi
 
@@ -84,7 +84,7 @@ fi
 ls -la "${artifacts[@]}"
 echo
 echo "Flash paths (see docs/FLASHING.md):"
-echo "  Marigold SD update: copy $IN_APP_SD_IMAGE to the SD card root, then reboot."
+echo "  Calendula SD update: copy $IN_APP_SD_IMAGE to the SD card root, then reboot."
 echo "  Stock/OEM updater : copy $STOCK_SD_IMAGE to the SD card root, then power"
 echo "                      on holding Power + Up on USB power."
 echo "  Unlocked, app only: esptool.py --chip $CHIP write_flash 0x10000 $FW"

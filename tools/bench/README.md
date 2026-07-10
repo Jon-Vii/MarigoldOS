@@ -1,4 +1,4 @@
-# MarigoldOS bench harness
+# CalendulaOS bench harness
 
 `tools/bench/bench.py` captures hardware serial logs, parses structured
 `bench:` telemetry, and summarizes development bench runs. It does not control

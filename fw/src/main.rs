@@ -24,6 +24,20 @@ pub struct EspAppDesc {
     pub reserv2: [u32; 18],
 }
 
+// Zero-pad a string into a fixed descriptor field. The fields are always
+// [u8; 32] in the image, so filling them costs no bytes; overlong input
+// fails the const evaluation instead of truncating silently.
+const fn desc_field<const N: usize>(s: &str) -> [u8; N] {
+    let mut out = [0u8; N];
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        out[i] = bytes[i];
+        i += 1;
+    }
+    out
+}
+
 #[allow(unsafe_code)]
 #[link_section = ".rodata_desc"]
 #[used]
@@ -32,8 +46,8 @@ pub static _ESP_APP_DESC: EspAppDesc = EspAppDesc {
     magic_word: 0xABCD5432,
     secure_version: 0,
     reserv1: [0; 2],
-    version: [0; 32],
-    project_name: [0; 32],
+    version: desc_field(env!("CARGO_PKG_VERSION")),
+    project_name: desc_field("CalendulaOS (MarigoldOS)"),
     time: *b"00:00:00\0\0\0\0\0\0\0\0",
     date: *b"2026-05-20\0\0\0\0\0\0",
     idf_ver: [0; 32],
@@ -144,7 +158,7 @@ fn main() -> ! {
     // and rely on race-to-idle for power.
     let config = esp_hal::Config::default().with_cpu_clock(esp_hal::clock::CpuClock::_160MHz);
     let peripherals = esp_hal::init(config);
-    esp_println::println!("xteink-x4-os: boot");
+    esp_println::println!("calendula-os: boot");
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let sw_ints = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);

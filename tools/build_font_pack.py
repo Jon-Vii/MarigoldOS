@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build or inspect a MarigoldOS custom typeface pack.
+"""Build or inspect a CalendulaOS custom typeface pack.
 
 The firmware cannot consume TTF/OTF files directly. This tool converts a small
 family of desktop font files into the fixed bitmap/metric records the reader
@@ -82,7 +82,7 @@ class BuiltFace:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build or inspect a MarigoldOS X4FT custom typeface pack."
+        description="Build or inspect a CalendulaOS X4FT custom typeface pack."
     )
     sub = parser.add_subparsers(dest="command")
 

@@ -1,4 +1,4 @@
-# MarigoldOS Context
+# CalendulaOS Context
 
 ## Glossary
 
