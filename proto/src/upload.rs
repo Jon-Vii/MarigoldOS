@@ -213,18 +213,27 @@ pub fn raw_query_name(path: &mut [u8]) -> Option<&mut [u8]> {
     Some(&mut raw_name[..len])
 }
 
-/// Interprets the result of reading an identity sidecar's 8 bytes: exactly 8
-/// bytes is a valid little-endian identity hash; anything else — a short read
-/// (truncated/interrupted file) or an I/O error — is corruption and must
-/// surface as `Err` rather than `Ok(None)`, so the upload aborts instead of
-/// abandoning the existing book.
+/// Interprets an identity sidecar read: an 8-byte file whose read returns all
+/// 8 bytes is a valid little-endian identity hash.
+///
+/// The two failure shapes get different verdicts because one is deterministic
+/// and one is transient. A sidecar of any other length is malformed for good —
+/// retrying can't fix it — so it reads as `Ok(None)` (no identity) and the
+/// collision probe moves on; the worst outcome is a visible duplicate book
+/// instead of every upload probing that slot failing forever. A short read or
+/// I/O error on a correctly-sized file means the card can't be trusted right
+/// now, so it surfaces as `Err` and the upload aborts and can be retried.
 // The unit error mirrors fw's sidecar helpers (read_upload_identity et al.),
-// where the only response to any failure is aborting the upload.
+// where the only response to an I/O failure is aborting the upload.
 #[allow(clippy::result_unit_err)]
 pub fn parse_identity_read<E>(
+    file_len: u32,
     read_result: Result<usize, E>,
     buf: &[u8; 8],
 ) -> Result<Option<u64>, ()> {
+    if file_len != 8 {
+        return Ok(None);
+    }
     match read_result {
         Ok(8) => Ok(Some(u64::from_le_bytes(*buf))),
         _ => Err(()),
@@ -281,24 +290,29 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_identity_read_corruption() {
+    fn test_parse_identity_read() {
         let buf = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
 
-        // Exact 8-byte read succeeds
+        // An 8-byte file read in full is a valid identity.
         assert_eq!(
-            parse_identity_read::<()>(Ok(8), &buf),
+            parse_identity_read::<()>(8, Ok(8), &buf),
             Ok(Some(0x8877665544332211))
         );
 
-        // Short reads (truncated/interrupted identity files) indicate corruption
-        // and must return Err rather than Ok(None) to abort the upload and prevent
-        // abandoning a partial upload.
-        assert_eq!(parse_identity_read::<()>(Ok(7), &buf), Err(()));
-        assert_eq!(parse_identity_read::<()>(Ok(1), &buf), Err(()));
-        assert_eq!(parse_identity_read::<()>(Ok(0), &buf), Err(()));
+        // A wrong-length sidecar is deterministically malformed: report "no
+        // identity" so the probe skips the slot instead of aborting every
+        // future upload whose probe window crosses it. The read result is
+        // irrelevant — the file can't hold a valid hash.
+        assert_eq!(parse_identity_read::<()>(0, Ok(0), &buf), Ok(None));
+        assert_eq!(parse_identity_read::<()>(7, Ok(7), &buf), Ok(None));
+        assert_eq!(parse_identity_read::<()>(9, Ok(8), &buf), Ok(None));
+        assert_eq!(parse_identity_read::<()>(7, Err(()), &buf), Ok(None));
 
-        // I/O errors are also errors
-        assert_eq!(parse_identity_read::<()>(Err(()), &buf), Err(()));
+        // A short read or I/O error on a correctly-sized file is transient
+        // card trouble: abort the upload so a retry can succeed.
+        assert_eq!(parse_identity_read::<()>(8, Ok(7), &buf), Err(()));
+        assert_eq!(parse_identity_read::<()>(8, Ok(0), &buf), Err(()));
+        assert_eq!(parse_identity_read::<()>(8, Err(()), &buf), Err(()));
     }
 
     #[test]

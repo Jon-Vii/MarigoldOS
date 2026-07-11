@@ -785,10 +785,14 @@ where
         Err(_) => return Err(()),
     };
     if file.length() != 8 {
-        return Err(());
+        esp_println::println!(
+            "upload: malformed identity sidecar {} ({} bytes), treating as absent",
+            file_name,
+            file.length()
+        );
     }
     let mut buf = [0u8; 8];
-    proto::upload::parse_identity_read(file.read(&mut buf), &buf)
+    proto::upload::parse_identity_read(file.length(), file.read(&mut buf), &buf)
 }
 
 /// Remove an uploaded book's identity and label sidecars, so a deleted book's name can't

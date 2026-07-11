@@ -541,7 +541,11 @@ where
                         }
                     }
                     Ok(None) => {
-                        // Valid read, but no identity found. It's a different file.
+                        // No identity (absent or malformed sidecar): treat as a
+                        // different file. A malformed sidecar never heals, so
+                        // matching it can't be trusted and aborting would block
+                        // this probe window forever; the worst case here is a
+                        // visible duplicate the user can delete.
                     }
                     Err(_) => {
                         // I/O error reading the identity sidecar. Abort.
