@@ -104,13 +104,19 @@ pub fn encode_png<W: Write>(writer: W, fb: &Framebuffer) -> Result<(), png::Enco
     encoder.set_color(png::ColorType::Grayscale);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header()?;
+    writer.write_image_data(&grayscale_pixels(fb))
+}
+
+/// The framebuffer as the 8-bit grayscale pixel rows encode_png writes;
+/// golden checks compare these decoded pixels, not encoded PNG bytes.
+pub fn grayscale_pixels(fb: &Framebuffer) -> Vec<u8> {
     let mut data = Vec::with_capacity(display::WIDTH * display::HEIGHT);
     for y in 0..display::HEIGHT {
         for x in 0..display::WIDTH {
             data.push(if fb.native_pixel(x, y) { 0xEE } else { 0x18 });
         }
     }
-    writer.write_image_data(&data)
+    data
 }
 
 pub fn encode_presented_png<W: Write>(

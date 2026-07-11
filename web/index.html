@@ -18,9 +18,29 @@
 <meta name="twitter:title" content="CalendulaOS · lightweight firmware for the Xteink X3 and X4">
 <meta name="twitter:description" content="Lightweight open firmware for the Xteink X3 and X4 e-readers. Try it in your browser, then flash it to your reader over USB or from an SD card.">
 <meta name="twitter:image" content="https://chongfun.github.io/calendula-os/home.png">
+<script>
+// The board wasm is picked by ?board= at runtime, so a static preload can't
+// name it. Kick the multi-megabyte download off during HTML parse instead of
+// waiting for the module script at the bottom of the page. `crossorigin`
+// makes the preload's request mode match the fetch() the module script
+// issues, so the browser reuses this download instead of starting a second.
+(function () {
+  var board = new URLSearchParams(location.search).get("board") === "x3" ? "x3" : "x4";
+  var link = document.createElement("link");
+  link.rel = "preload";
+  link.as = "fetch";
+  link.type = "application/wasm";
+  link.crossOrigin = "anonymous";
+  link.href = board + "_web_emulator.wasm";
+  document.head.appendChild(link);
+})();
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&display=swap" rel="stylesheet">
+<!-- Non-blocking font load: media="print" keeps the stylesheet off the
+     critical path; onload swaps it live. Georgia stands in until then. -->
+<link href="https://fonts.googleapis.com/css2?family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&display=swap" rel="stylesheet"></noscript>
 <style>
   :root {
     --paper: #eeece2;
@@ -644,11 +664,67 @@
   const led = document.getElementById("led");
   const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+  // Book bodies are static assets fetched at runtime and copied into wasm
+  // memory; only the shelf metadata is compiled in. Order matches
+  // books.rs's SHELF.
+  const BOOK_FILES = [
+    "alice.txt", "carol.txt", "aesop.txt", "pegana.txt",
+    "timemachine.txt", "warworlds.txt", "mars.txt", "lastmen.txt",
+  ];
+  const bookFetches = new Map(); // shelf index -> Promise<string>
+  function fetchBook(index) {
+    if (!bookFetches.has(index)) {
+      bookFetches.set(index, fetch("books/" + BOOK_FILES[index]).then((response) => {
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return response.text();
+      }));
+    }
+    return bookFetches.get(index);
+  }
+
+  // Start the boot book's download in parallel with the wasm itself. The
+  // saved snapshot's book_id decodes to shelf index book_id - 2
+  // (app_core::FIRST_SD_BOOK_ID); a fresh visit opens the first book.
+  let bootBook = 0;
+  try {
+    const saved = JSON.parse(localStorage.getItem(SAVE_KEY));
+    if (Array.isArray(saved) && saved[0] >= 2) bootBook = (saved[0] - 2) % BOOK_FILES.length;
+  } catch (_) { /* fresh start */ }
+  fetchBook(bootBook).catch(() => {});
+
   const { instance } = await WebAssembly.instantiateStreaming(
     fetch(cfg.wasm)
   );
   const wasm = instance.exports;
   wasm.x4_boot();
+
+  // Hand a fetched body to the wasm: stage a buffer, copy, commit. The
+  // memory view is taken after x4_book_alloc — growing the buffer can move
+  // wasm memory.
+  function deliverBook(index, text) {
+    const bytes = new TextEncoder().encode(text);
+    const ptr = wasm.x4_book_alloc(bytes.length);
+    new Uint8Array(wasm.memory.buffer, ptr, bytes.length).set(bytes);
+    wasm.x4_book_ready(index);
+  }
+
+  // The emulator flags the book it is waiting on (x4_book_wanted, polled in
+  // pump); fetch and deliver it once, with a short back-off on failure so
+  // the loading plate keeps a retry alive without hammering the network.
+  const requestedBooks = new Set();
+  function requestBook(index) {
+    if (requestedBooks.has(index)) return;
+    requestedBooks.add(index);
+    fetchBook(index)
+      .then((text) => deliverBook(index, text))
+      .catch((err) => {
+        console.error("book fetch failed: " + BOOK_FILES[index], err);
+        setTimeout(() => {
+          bookFetches.delete(index);
+          requestedBooks.delete(index);
+        }, 2000);
+      });
+  }
 
   function syncDeviceOrientation(orientation) {
     device.classList.toggle("buttons-up", orientation === ORIENTATION_BUTTONS_TOP);
@@ -725,52 +801,60 @@
 
   // mode: 1 full (~3.5 s real; abridged here), 2 fast (421 ms), 3 fast-clean.
   async function refresh(mode) {
-    const pixels = frame();
+    // Copy the frame out of wasm memory before the first await: a book
+    // delivered mid-refresh calls x4_book_alloc, which can grow (and so
+    // detach) the memory buffer, zeroing any live view into it.
+    const pixels = new Uint8ClampedArray(frame());
     busy = true;
     led.classList.add("on");
-    if (reduceMotion) {
-      ghosting = false;
-      putFinal(pixels);
-    } else if (mode === 2) {
-      // A fast update does not flash: changed pixels just redraw, and a
-      // faint imprint of the outgoing page stays behind until a cleaning
-      // refresh. The panel is still busy for the rated 421 ms.
-      workCtx.drawImage(page, 0, 0);
-      ghostCtx.drawImage(work, 0, 0);
-      ghosting = true;
-      putFinal(pixels);
-      await sleep(420);
-    } else {
-      // FastClean is the panel's one-flicker cleaning waveform; full runs
-      // several inversion passes.
-      const flashes = mode === 1 ? 3 : 1;
-      for (let i = 0; i < flashes; i++) {
-        putInverted(pixels);
-        await sleep(150);
-        ctx.fillStyle = "#161614";
-        ctx.fillRect(0, 0, WIDTH, HEIGHT);
-        present();
-        await sleep(120);
-        ctx.fillStyle = "#eeece2";
-        ctx.fillRect(0, 0, WIDTH, HEIGHT);
-        present();
-        await sleep(120);
+    try {
+      if (reduceMotion) {
+        ghosting = false;
+        putFinal(pixels);
+      } else if (mode === 2) {
+        // A fast update does not flash: changed pixels just redraw, and a
+        // faint imprint of the outgoing page stays behind until a cleaning
+        // refresh. The panel is still busy for the rated 421 ms.
+        workCtx.drawImage(page, 0, 0);
+        ghostCtx.drawImage(work, 0, 0);
+        ghosting = true;
+        putFinal(pixels);
+        await sleep(420);
+      } else {
+        // FastClean is the panel's one-flicker cleaning waveform; full runs
+        // several inversion passes.
+        const flashes = mode === 1 ? 3 : 1;
+        for (let i = 0; i < flashes; i++) {
+          putInverted(pixels);
+          await sleep(150);
+          ctx.fillStyle = "#161614";
+          ctx.fillRect(0, 0, WIDTH, HEIGHT);
+          present();
+          await sleep(120);
+          ctx.fillStyle = "#eeece2";
+          ctx.fillRect(0, 0, WIDTH, HEIGHT);
+          present();
+          await sleep(120);
+        }
+        ghosting = false;
+        putFinal(pixels);
+        await sleep(160);
       }
-      ghosting = false;
-      putFinal(pixels);
-      await sleep(160);
-    }
-    led.classList.remove("on");
-    busy = false;
-    if (queued !== null) {
-      const next = queued;
-      queued = null;
-      press(next);
+    } finally {
+      led.classList.remove("on");
+      busy = false;
+      if (queued !== null) {
+        const next = queued;
+        queued = null;
+        press(next);
+      }
     }
   }
 
   let seq = wasm.x4_frame_seq();
   function pump() {
+    const wanted = wasm.x4_book_wanted();
+    if (wanted >= 0) requestBook(wanted);
     wasm.x4_tick(performance.now());
     const now = wasm.x4_frame_seq();
     if (now !== seq && !busy) {

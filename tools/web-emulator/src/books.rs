@@ -2,6 +2,10 @@
 //! from a light line markup into the same block records the firmware caches,
 //! so `ui::reading` paginates and draws them exactly as it would on the card.
 //! The first entry is the default Continue book a fresh visit opens to.
+//!
+//! Only the shelf metadata is compiled in; the book bodies ship as static
+//! assets (`_site/books/`, staged by `tools/build-web.sh`) and arrive at
+//! runtime through the `x4_book_alloc`/`x4_book_ready` ABI in `lib.rs`.
 
 use display::font::{FontStyle, TypeSettings};
 use proto::cache::{BlockRecord, PageRecord};
@@ -14,49 +18,42 @@ use ui::reading::{
 pub struct BookSource {
     pub title: &'static str,
     pub author: &'static str,
-    pub text: &'static str,
 }
 
+// Shelf order is the delivery index of the runtime book ABI; index.html's
+// BOOK_FILES list names the matching .txt asset for each slot.
 pub const SHELF: [BookSource; 8] = [
     BookSource {
         title: "Alice's Adventures in Wonderland",
         author: "Lewis Carroll",
-        text: include_str!("../books/alice.txt"),
     },
     BookSource {
         title: "A Christmas Carol",
         author: "Charles Dickens",
-        text: include_str!("../books/carol.txt"),
     },
     BookSource {
         title: "Aesop's Fables",
         author: "Townsend translation",
-        text: include_str!("../books/aesop.txt"),
     },
     BookSource {
         title: "The Gods of Pegana",
         author: "Lord Dunsany",
-        text: include_str!("../books/pegana.txt"),
     },
     BookSource {
         title: "The Time Machine",
         author: "H. G. Wells",
-        text: include_str!("../books/timemachine.txt"),
     },
     BookSource {
         title: "The War of the Worlds",
         author: "H. G. Wells",
-        text: include_str!("../books/warworlds.txt"),
     },
     BookSource {
         title: "A Princess of Mars",
         author: "Edgar Rice Burroughs",
-        text: include_str!("../books/mars.txt"),
     },
     BookSource {
         title: "Last and First Men",
         author: "Olaf Stapledon",
-        text: include_str!("../books/lastmen.txt"),
     },
 ];
 
@@ -132,7 +129,7 @@ impl ReadingBlocks for BookStore {
 }
 
 impl BookStore {
-    pub fn build(source: &BookSource, settings: TypeSettings, portrait: bool) -> Self {
+    pub fn build(text: &str, settings: TypeSettings, portrait: bool) -> Self {
         let mut store = Self {
             blocks: Vec::new(),
             settings,
@@ -141,7 +138,7 @@ impl BookStore {
             chapters: Vec::new(),
         };
         let mut chapter_blocks: Vec<usize> = Vec::new();
-        parse(source.text, &mut store, &mut chapter_blocks);
+        parse(text, &mut store, &mut chapter_blocks);
         store.finish_line_counts();
         store.paginate(&chapter_blocks);
         store

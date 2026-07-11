@@ -62,10 +62,30 @@ cargo run --manifest-path tools/emulator/Cargo.toml --target "$HOST" \
   --no-default-features --features device-x3 -- --scenario fixtures/scenarios --dump fixtures/golden
 ```
 
-`--check` is an exact PNG byte comparison against the emulator's own encoder, so
-goldens must come from `--dump`. Never hand-edit one or round-trip it through an
-image editor. `--present-dump` writes the panel-presented image instead of the
-framebuffer — useful when debugging refresh and ghosting, never a golden.
+`--check` compares decoded pixels with strict equality, so goldens must come
+from `--dump`. Never hand-edit one or round-trip it through an image editor.
+`--present-dump` writes the panel-presented image instead of the framebuffer —
+useful when debugging refresh and ghosting, never a golden.
+
+### Per-board target dirs when alternating boards
+
+Both boards share `tools/emulator/target`, and the `device-x3` feature flip
+recompiles `display` → `ui` → emulator (~2–6 s each way), so alternating X4/X3
+checks pay that rebuild on every switch. Give each board its own artifact
+cache with `--target-dir` and both directions stay warm:
+
+```sh
+alias golden-x4='cargo run --manifest-path tools/emulator/Cargo.toml --target "$HOST" \
+  --target-dir tools/emulator/target/x4 \
+  --no-default-features -- --scenario fixtures/scenarios --check fixtures/golden'
+alias golden-x3='cargo run --manifest-path tools/emulator/Cargo.toml --target "$HOST" \
+  --target-dir tools/emulator/target/x3 \
+  --no-default-features --features device-x3 -- --scenario fixtures/scenarios --check fixtures/golden'
+```
+
+The same `--target-dir` split works for the `cargo test` reading-golden runs
+below. The per-board directories live under the emulator's own `target/`, so
+`cargo clean --manifest-path tools/emulator/Cargo.toml` still clears them.
 
 To eyeball a single scenario, pass a `.toml` file to `--scenario` and a `.png` to
 `--dump`; `--gui` needs `--features gui`.

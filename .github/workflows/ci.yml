@@ -59,6 +59,8 @@ jobs:
 
   golden-frames:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust (stable)
@@ -67,6 +69,13 @@ jobs:
         run: cargo run --manifest-path tools/emulator/Cargo.toml --target "$HOST_TARGET" --no-default-features -- --scenario fixtures/scenarios --check fixtures/golden
       - name: Check X3 emulator golden frames
         run: cargo run --manifest-path tools/emulator/Cargo.toml --target "$HOST_TARGET" --no-default-features --features device-x3 -- --scenario fixtures/scenarios --check fixtures/golden
+      # tools/emulator is its own cargo workspace, so the root `cargo test
+      # --workspace` never reaches it; without these the reading-page goldens
+      # and the emulator unit tests run in no workflow at all.
+      - name: Test X4 emulator (reading goldens, unit tests)
+        run: cargo test --manifest-path tools/emulator/Cargo.toml --target "$HOST_TARGET" --no-default-features
+      - name: Test X3 emulator (reading goldens, unit tests)
+        run: cargo test --manifest-path tools/emulator/Cargo.toml --target "$HOST_TARGET" --no-default-features --features device-x3
 
   build-firmware:
     runs-on: ubuntu-latest

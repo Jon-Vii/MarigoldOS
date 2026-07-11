@@ -1,8 +1,8 @@
 //! Browser build of the X4 emulator: the firmware's reducer, renderer, and
 //! reading surface compiled to wasm32-unknown-unknown behind a small raw
-//! C ABI. The page's JS feeds key presses and a monotonic clock in; it reads
-//! frames back as RGBA straight out of wasm memory. No wasm-bindgen — the
-//! surface is a handful of scalars and two buffer pointers.
+//! C ABI. The page's JS feeds key presses, a monotonic clock, and fetched
+//! book bodies in; it reads frames back as RGBA straight out of wasm memory.
+//! No wasm-bindgen — the surface is a handful of scalars and buffer pointers.
 
 mod books;
 
@@ -48,6 +48,9 @@ struct WebEmulator {
     store: Option<BookStore>,
     store_book: Option<u16>,
     load_status: LoadStatus,
+    /// Shelf index whose body the page should fetch (`x4_book_wanted`);
+    /// cleared when `x4_book_ready` delivers it.
+    wanted_book: Option<u16>,
     ops: Vec<(f64, Op)>,
     frame_seq: u32,
     last_refresh: u32,
@@ -66,6 +69,7 @@ impl WebEmulator {
             store: None,
             store_book: None,
             load_status: LoadStatus::Empty,
+            wanted_book: None,
             ops: Vec::new(),
             frame_seq: 0,
             last_refresh: 0,
@@ -84,10 +88,24 @@ impl WebEmulator {
         emu.state = emu
             .state
             .apply_sync_event(SyncEvent::NetworkSaved(home_network()));
-        emu.hydrate_book_metadata(0);
-        emu.apply_loaded_metadata(0);
+        emu.open_or_await_book(0);
         emu.render(RenderKind::Boot);
         emu
+    }
+
+    /// Hydrate `book_index` now if its body has been delivered; otherwise
+    /// ask the page to fetch it and leave a poll op behind so the metadata
+    /// (and any loading plate) resolves when `x4_book_ready` lands.
+    fn open_or_await_book(&mut self, book_index: u16) {
+        if self.hydrate_book_metadata(book_index) {
+            self.apply_loaded_metadata(book_index);
+            return;
+        }
+        self.load_status = LoadStatus::Loading;
+        self.wanted_book = Some(book_index);
+        self.ops
+            .retain(|(_, op)| !matches!(op, Op::FinishOpen { .. }));
+        self.ops.push((0.0, Op::FinishOpen { book_index }));
     }
 
     fn input(&mut self, button: Button, now: f64) {
@@ -126,7 +144,16 @@ impl WebEmulator {
                     if !warm {
                         self.load_status = LoadStatus::Loading;
                     }
+                    // Start the page's fetch now, in parallel with the
+                    // simulated card latency — or, when the body is already
+                    // cached, drop any want left over from a superseded open
+                    // so the page stops retrying a book nobody is waiting on.
+                    self.wanted_book = book_text(book_index).is_none().then_some(book_index);
                     let delay = if warm { REOPEN_BOOK_MS } else { OPEN_BOOK_MS };
+                    // A new open supersedes any earlier one still waiting
+                    // on its body.
+                    self.ops
+                        .retain(|(_, op)| !matches!(op, Op::FinishOpen { .. }));
                     self.ops.push((now + delay, Op::FinishOpen { book_index }));
                 }
                 StorageCommand::ExtendSection { .. } | StorageCommand::StoreProgress(_) => {
@@ -183,7 +210,15 @@ impl WebEmulator {
         });
         for op in due {
             match op {
-                Op::FinishOpen { book_index } => self.finish_open(book_index),
+                Op::FinishOpen { book_index } => {
+                    if book_text(book_index).is_none() {
+                        // Body still in flight from the page; keep the
+                        // loading plate up and poll again shortly.
+                        self.ops.push((now + 50.0, Op::FinishOpen { book_index }));
+                    } else {
+                        self.finish_open(book_index)
+                    }
+                }
                 Op::Sync(event) => {
                     if self.state.view == AppView::Wireless {
                         self.state = self.state.apply_sync_event(event);
@@ -206,23 +241,30 @@ impl WebEmulator {
     }
 
     fn finish_open(&mut self, book_index: u16) {
-        self.hydrate_book_metadata(book_index);
+        if !self.hydrate_book_metadata(book_index) {
+            return;
+        }
         self.apply_loaded_metadata(book_index);
         self.render(RenderKind::Page);
     }
 
-    fn hydrate_book_metadata(&mut self, book_index: u16) {
+    /// Build the paginated store for `book_index` if its body has arrived
+    /// from the page; false while the fetch is still in flight.
+    fn hydrate_book_metadata(&mut self, book_index: u16) -> bool {
         if self.store_ready_for(book_index) {
-            return;
+            return true;
         }
-        let source = &SHELF[book_index as usize % SHELF.len()];
+        let Some(text) = book_text(book_index) else {
+            return false;
+        };
         self.store = Some(BookStore::build(
-            source,
+            text,
             self.state.type_settings(),
             app_core::is_portrait(self.state.orientation),
         ));
         self.store_book = Some(book_index);
         self.load_status = LoadStatus::Ready;
+        true
     }
 
     fn apply_loaded_metadata(&mut self, book_index: u16) {
@@ -278,8 +320,7 @@ impl WebEmulator {
             },
         );
         let book_index = ReaderSource::from_book_id(snapshot[0]).sd_index().unwrap_or(0);
-        self.hydrate_book_metadata(book_index);
-        self.apply_loaded_metadata(book_index);
+        self.open_or_await_book(book_index);
         self.render(RenderKind::Page);
     }
 
@@ -300,6 +341,12 @@ impl WebEmulator {
     }
 
     fn render(&mut self, kind: RenderKind) {
+        // Async work keeps completing while asleep (a book body arriving for
+        // a pending FinishOpen, sync ops); state may hydrate, but nothing
+        // may paint over the sleep screen. Waking re-renders explicitly.
+        if self.sleeping {
+            return;
+        }
         let request = self.state.render_request(kind);
         let sd_reading = request.view == AppView::Reading
             && ReaderSource::from_book_id(request.book_id).is_sd();
@@ -438,6 +485,25 @@ impl WebEmulator {
 
 fn home_network() -> WifiSsid {
     WifiSsid::new("HOME-WIFI").unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Runtime book delivery. Only the shelf metadata is compiled in; the page
+// fetches each body (`_site/books/*.txt`) on demand and hands it over through
+// `x4_book_alloc` + `x4_book_ready`. Same single-threaded static-cell rules
+// as EMULATOR below.
+
+const BOOK_NONE: Option<String> = None;
+static mut BOOK_TEXTS: [Option<String>; SHELF.len()] = [BOOK_NONE; SHELF.len()];
+static mut INCOMING_BOOK: Vec<u8> = Vec::new();
+
+/// Delivered body of a shelf entry. The reference is only sound until the
+/// page redelivers that index; callers use it transiently to build a store.
+fn book_text(book_index: u16) -> Option<&'static str> {
+    unsafe {
+        #[allow(static_mut_refs)]
+        BOOK_TEXTS[book_index as usize % SHELF.len()].as_deref()
+    }
 }
 
 fn draw_centered(fb: &mut Framebuffer, font: &'static display::font::BitmapFont, text: &str, y: i16) {
@@ -582,6 +648,50 @@ pub extern "C" fn x4_restore(
         family,
         front_buttons,
     ]);
+}
+
+/// Shelf index of the book body the emulator is waiting on, or -1. The page
+/// polls this each frame and answers with `x4_book_alloc` + `x4_book_ready`.
+#[no_mangle]
+pub extern "C" fn x4_book_wanted() -> i32 {
+    match emulator().wanted_book {
+        Some(index) => i32::from(index),
+        None => -1,
+    }
+}
+
+/// Stage an incoming book body: returns a `len`-byte buffer for the page to
+/// copy the fetched text into. Growing the buffer may move wasm memory, so
+/// the page must take its view of memory after this call.
+#[no_mangle]
+pub extern "C" fn x4_book_alloc(len: u32) -> *mut u8 {
+    unsafe {
+        #[allow(static_mut_refs)]
+        {
+            INCOMING_BOOK.clear();
+            INCOMING_BOOK.resize(len as usize, 0);
+            INCOMING_BOOK.as_mut_ptr()
+        }
+    }
+}
+
+/// Commit the staged buffer as shelf entry `index`'s body. Any open waiting
+/// on it (the loading plate, or boot's Continue metadata) resolves on the
+/// next `x4_tick` via the poll op the open left behind.
+#[no_mangle]
+pub extern "C" fn x4_book_ready(index: u32) {
+    let index = index as usize % SHELF.len();
+    unsafe {
+        #[allow(static_mut_refs)]
+        {
+            let bytes = core::mem::take(&mut INCOMING_BOOK);
+            BOOK_TEXTS[index] = Some(String::from_utf8_lossy(&bytes).into_owned());
+        }
+    }
+    let emu = emulator();
+    if emu.wanted_book == Some(index as u16) {
+        emu.wanted_book = None;
+    }
 }
 
 // TypeSettings is compared in store_ready_for; keep the import used even in

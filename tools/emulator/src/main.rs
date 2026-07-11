@@ -169,10 +169,25 @@ fn output_path(base: &Path, scenario: &Path) -> Result<PathBuf, String> {
 }
 
 fn compare_png(path: &Path, fb: &display::fb::Framebuffer) -> Result<(), String> {
-    let mut actual = Vec::new();
-    render::encode_png(&mut actual, fb).map_err(|err| err.to_string())?;
-    let expected = std::fs::read(path).map_err(|err| format!("{}: {err}", path.display()))?;
-    if actual == expected {
+    // Compare decoded pixels, strictly: encoded PNG bytes would also hinge
+    // on the `png` crate's encoder, so an encoder change in a dependency
+    // bump would fail every golden without any pixel differing.
+    let file = std::fs::File::open(path).map_err(|err| format!("{}: {err}", path.display()))?;
+    let decoder = png::Decoder::new(std::io::BufReader::new(file));
+    let mut reader = decoder
+        .read_info()
+        .map_err(|err| format!("{}: {err}", path.display()))?;
+    let mut expected = vec![0u8; reader.output_buffer_size()];
+    let info = reader
+        .next_frame(&mut expected)
+        .map_err(|err| format!("{}: {err}", path.display()))?;
+    expected.truncate(info.buffer_size());
+    let matches = info.width as usize == display::WIDTH
+        && info.height as usize == display::HEIGHT
+        && info.color_type == png::ColorType::Grayscale
+        && info.bit_depth == png::BitDepth::Eight
+        && render::grayscale_pixels(fb) == expected;
+    if matches {
         Ok(())
     } else {
         Err(format!("frame does not match {}", path.display()))

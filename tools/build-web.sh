@@ -18,11 +18,24 @@ WASM="$ROOT/tools/web-emulator/target/wasm32-unknown-unknown/release/x4_web_emul
 mkdir -p "$OUT_DIR"
 cp -R "$ROOT/web/." "$OUT_DIR/"
 
+# Book bodies are runtime-fetched static assets, not compiled into the wasm;
+# index.html's BOOK_FILES list matches books.rs's SHELF order.
+mkdir -p "$OUT_DIR/books"
+cp "$ROOT/tools/web-emulator/books/"*.txt "$OUT_DIR/books/"
+
 build() {
   local board="$1"; shift
   cargo build --manifest-path "$MANIFEST" \
     --target wasm32-unknown-unknown --release "$@"
-  cp "$WASM" "$OUT_DIR/${board}_web_emulator.wasm"
+  local out="$OUT_DIR/${board}_web_emulator.wasm"
+  cp "$WASM" "$out"
+  # Best-effort size pass: CI installs binaryen (pages.yml), locally it is
+  # optional — the un-optimized wasm is fully functional, just heavier.
+  if command -v wasm-opt >/dev/null 2>&1; then
+    wasm-opt -Oz --strip-debug --strip-producers "$out" -o "$out"
+  else
+    echo "wasm-opt not found; skipping size pass for ${board} (install binaryen to enable)" >&2
+  fi
 }
 
 build x4
