@@ -39,7 +39,9 @@ tools/bench/bench.py sleep-sync --port /dev/cu.usbmodem101 --cycles 20
 ## Logs
 
 Raw bench logs are written under `target/bench/` by default and should not be
-committed. Summarize them with:
+committed. Captures append to the same file, so a log usually holds several
+runs; `report` (and the summary each capture prints) covers only the latest
+run — pass `--all` to pool the whole log.
 
 ```sh
 tools/bench/bench.py report target/bench/latest.jsonl

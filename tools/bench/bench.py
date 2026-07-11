@@ -110,6 +110,11 @@ def main() -> int:
     report.add_argument("paths", nargs="+", type=Path)
     report.add_argument("--budgets", type=Path, default=DEFAULT_BUDGETS)
     report.add_argument("--strict", action="store_true", help="exit non-zero on budget warnings")
+    report.add_argument(
+        "--all",
+        action="store_true",
+        help="pool every run in the log instead of only the latest",
+    )
     report.set_defaults(func=run_report)
 
     args = parser.parse_args()
@@ -468,8 +473,28 @@ def write_event(out: Any, event: dict[str, Any]) -> None:
 
 
 def run_report(args: argparse.Namespace) -> int:
-    report_warnings = summarize_paths(args.paths, args.budgets, validate_suites=args.strict)
+    report_warnings = summarize_paths(
+        args.paths,
+        args.budgets,
+        validate_suites=args.strict,
+        latest_only=not getattr(args, "all", False),
+    )
     return 1 if args.strict and report_warnings else 0
+
+
+def split_runs(events: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Splits a pooled event stream at its run_start markers.
+
+    Captures append to the same log, so a file usually holds several
+    runs; events before the first marker (hand-assembled logs) form
+    their own leading segment.
+    """
+    runs: list[list[dict[str, Any]]] = [[]]
+    for event in events:
+        if event.get("event") == "run_start" and runs[-1]:
+            runs.append([])
+        runs[-1].append(event)
+    return [run for run in runs if run]
 
 
 def summarize_paths(
@@ -477,6 +502,7 @@ def summarize_paths(
     budgets_path: Path | None = None,
     *,
     validate_suites: bool = False,
+    latest_only: bool = True,
 ) -> list[str]:
     events: list[dict[str, Any]] = []
     for path in paths:
@@ -484,6 +510,15 @@ def summarize_paths(
     if not events:
         print("bench report: no events")
         return []
+
+    runs = split_runs(events)
+    if latest_only and len(runs) > 1:
+        events = runs[-1]
+        start = next((e for e in events if e.get("event") == "run_start"), {})
+        print(
+            f"bench report: latest run only ({start.get('suite', 'unknown')}; "
+            f"{len(runs) - 1} earlier run(s) in the log — pass --all to pool)"
+        )
 
     renders = [event for event in events if event.get("event") == "render"]
     reading_renders = [event for event in renders if event.get("view") == "Reading"]

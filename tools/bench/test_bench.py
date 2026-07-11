@@ -93,6 +93,86 @@ class BenchReportTests(unittest.TestCase):
             warnings = bench.summarize_paths([path], None, validate_suites=True)
         self.assertEqual(warnings, ["storage-cache: no parsed bench telemetry"])
 
+    @patch("builtins.print")
+    def test_summarize_paths_default_reports_latest_run(self, mock_print) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "log.jsonl"
+            path.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"suite": "run1", "event": "run_start"}),
+                        json.dumps({"suite": "run1", "event": "render", "view": "Reading", "mode": "Fast"}),
+                        json.dumps({"suite": "run2", "event": "run_start"}),
+                        json.dumps({"suite": "run2", "event": "refresh", "busy_ms": 100}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            bench.summarize_paths([path], None)
+            
+            # Since latest_only=True, we should only see run2's events.
+            mock_print.assert_any_call("events:        2")
+            mock_print.assert_any_call("renders:       0")
+            mock_print.assert_any_call("bench report: latest run only (run2; 1 earlier run(s) in the log — pass --all to pool)")
+
+    @patch("builtins.print")
+    def test_summarize_paths_all_reports_every_run(self, mock_print) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "log.jsonl"
+            path.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"suite": "run1", "event": "run_start"}),
+                        json.dumps({"suite": "run1", "event": "render", "view": "Reading", "mode": "Fast"}),
+                        json.dumps({"suite": "run2", "event": "run_start"}),
+                        json.dumps({"suite": "run2", "event": "refresh", "busy_ms": 100}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            bench.summarize_paths([path], None, latest_only=False)
+            
+            # Since latest_only=False, we should see both run1 and run2's events.
+            mock_print.assert_any_call("events:        4")
+            mock_print.assert_any_call("renders:       1")
+
+class SplitRunsTests(unittest.TestCase):
+    def test_markerless_input(self) -> None:
+        events = [{"event": "render"}, {"event": "input"}]
+        self.assertEqual(bench.split_runs(events), [events])
+
+    def test_multiple_run_start_segments(self) -> None:
+        e1 = {"event": "run_start", "id": 1}
+        e2 = {"event": "render"}
+        e3 = {"event": "run_start", "id": 2}
+        e4 = {"event": "input"}
+        self.assertEqual(
+            bench.split_runs([e1, e2, e3, e4]),
+            [[e1, e2], [e3, e4]],
+        )
+
+    def test_pre_marker_events(self) -> None:
+        e1 = {"event": "render"}
+        e2 = {"event": "run_start"}
+        e3 = {"event": "input"}
+        self.assertEqual(
+            bench.split_runs([e1, e2, e3]),
+            [[e1], [e2, e3]],
+        )
+
+    def test_empty_latest_run(self) -> None:
+        e1 = {"event": "run_start"}
+        e2 = {"event": "render"}
+        e3 = {"event": "run_start"}
+        self.assertEqual(
+            bench.split_runs([e1, e2, e3]),
+            [[e1, e2], [e3]],
+        )
+        self.assertEqual(bench.split_runs([]), [])
+
+
 
 class CaptureLinesTests(unittest.TestCase):
     @patch("bench.serial_lines")
@@ -105,7 +185,7 @@ class CaptureLinesTests(unittest.TestCase):
         with self.assertRaises(OSError):
             list(bench.capture_lines("/dev/port"))
 
-    @patch("bench.print")
+    @patch("builtins.print")
     @patch("bench.time.sleep")
     @patch("bench.os.path.exists")
     @patch("bench.serial_lines")
@@ -129,7 +209,7 @@ class CaptureLinesTests(unittest.TestCase):
         mock_print.assert_any_call("port: /dev/port vanished (device asleep?); wake it to resume capture", flush=True)
         mock_print.assert_any_call("port: back; resuming capture", flush=True)
 
-    @patch("bench.print")
+    @patch("builtins.print")
     @patch("bench.time.sleep")
     @patch("bench.time.monotonic")
     @patch("bench.os.path.exists")
