@@ -176,11 +176,20 @@ recovery path for a wrong password or a changed router that used to
 require editing the card on a computer.
 
 With no credentials anywhere, starting a session raises the onboarding portal
-instead: an open `XTEINK-X4` hotspot at 192.168.4.1 with a captive DHCP
+instead: a WPA2 hotspot (`XTEINK-X4` or `XTEINK-X3`, named for the board)
+at 192.168.4.1 with a captive DHCP
 server, a DNS catch-all (every name resolves to the portal, which makes
 phones raise their sign-in sheet unprompted), and a credential form on
-port 80. The Wireless screen shows a baked-at-build-time join QR
-(`tools/generate_qr.py`). Submitted credentials travel to the display
+port 80. The hotspot's WPA2 PSK is minted per session from the hardware
+RNG when the portal starts — the form's plaintext POST is at least
+encrypted over RF, and because the PSK exists only in that session's
+RAM, nothing secret lives in the repo or is extractable from a release
+binary. It rides `SyncEvent::PortalUp` to the Wireless screen, which
+encodes the join QR at render time (`ui/src/join_qr.rs`, Nayuki's
+no-heap qrcodegen) and prints the password beside it for phones that
+cannot scan; the display is the PSK's only channel (supporting both
+QR scanning and manual password entry), so the on-screen credentials
+and beacon cannot drift. Submitted credentials travel to the display
 task as a `StoreWifiCredentials` Copy message, land in WIFI.BIN, and the
 next session joins as a station. `proto::captive` holds the sans-IO
 DHCP/DNS/HTTP codecs under host tests; the wifi task only owns sockets.

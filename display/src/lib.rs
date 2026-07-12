@@ -25,6 +25,12 @@ pub const WIDTH: usize = 792;
 #[cfg(feature = "device-x3")]
 pub const HEIGHT: usize = 528;
 
+/// Which board this build targets, for the rare non-geometry choice a
+/// downstream crate makes per device (e.g. the ui's board-named portal
+/// SSID). This crate owns the `device-x3` feature, so the flag lives
+/// here rather than replumbing the feature through every dependent.
+pub const DEVICE_IS_X3: bool = cfg!(feature = "device-x3");
+
 pub const ROW_BYTES: usize = WIDTH / 8;
 pub const FB_BYTES: usize = ROW_BYTES * HEIGHT;
 pub const BAND_ROWS: usize = 80;

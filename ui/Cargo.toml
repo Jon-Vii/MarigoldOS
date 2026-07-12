@@ -10,6 +10,7 @@ workspace = true
 app-core = { path = "../app-core" }
 display = { path = "../display" }
 proto = { path = "../proto" }
+qrcodegen-no-heap = "1.8.1"
 
 [dev-dependencies]
 heapless = "0.9.0"

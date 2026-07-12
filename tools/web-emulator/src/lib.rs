@@ -177,9 +177,14 @@ impl WebEmulator {
                 self.ops
                     .push((now + 2600.0, Op::Sync(SyncEvent::Serving([192, 168, 1, 27]))));
             } else {
-                // No saved network: the onboarding hotspot comes up and a
-                // pretend phone submits credentials a few seconds later.
-                self.ops.push((now + 900.0, Op::Sync(SyncEvent::PortalUp)));
+                // No saved network: the onboarding hotspot comes up (with
+                // the fixed demo PSK in place of the per-session one the
+                // firmware mints) and a pretend phone submits credentials
+                // a few seconds later.
+                self.ops.push((
+                    now + 900.0,
+                    Op::Sync(SyncEvent::PortalUp(app_core::PortalPsk::EMULATOR_DEMO)),
+                ));
                 self.ops.push((
                     now + 7000.0,
                     Op::Sync(SyncEvent::CredentialsSaved(home_network())),

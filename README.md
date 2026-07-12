@@ -28,7 +28,7 @@ e-ink display and a selection of public-domain books.
 ### Library & sync
 - **Streamed catalog** — library size isn't bounded by RAM
 - **Local Wi-Fi shelf** — upload, list, and delete books from your browser
-- **Zero-config onboarding** — with no stored credentials, the reader raises an open hotspot with a captive portal and an on-screen QR code
+- **Zero-config onboarding** — with no stored credentials, the reader raises a WPA2-protected, board-specific hotspot with a freshly generated per-session password presented on-screen, a captive portal, and an on-screen QR code
 
 ### Try it
 - **Browser emulator** — the real render code in WebAssembly, no device needed

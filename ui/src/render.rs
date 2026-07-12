@@ -8,8 +8,8 @@
 //! only — the device does not tell time.
 
 use crate::{
-    qr_generated, UiLibraryStatus, UiOrientation, UiRefreshPolicy, UiShell, UiSyncStatus,
-    UiTocItem, UiView,
+    join_qr, UiLibraryStatus, UiOrientation, UiRefreshPolicy, UiShell, UiSyncStatus, UiTocItem,
+    UiView,
 };
 use display::fb::{FbFrame, Framebuffer};
 use display::font::{
@@ -634,31 +634,51 @@ fn render_wireless(fb: &mut Framebuffer, shell: &UiShell<'_>) {
             push_ipv4(&mut buf, &mut cursor, ip);
             centered_note(fb, layout, text_in(&buf, cursor));
         }
-        UiSyncStatus::PortalUp => {
-            // The QR joins the open hotspot; the captive DNS then raises
-            // the phone's sign-in sheet with the credential form.
-            draw_qr(
-                fb,
-                &qr_generated::QR_JOIN_BITS,
-                qr_generated::QR_JOIN_SIZE,
-                qr_generated::QR_JOIN_STRIDE,
-                layout.heading_cx,
-                160,
-                5,
-            );
+        UiSyncStatus::PortalUp(psk) => {
+            // The QR joins the WPA2 hotspot, whose PSK this session
+            // minted; the captive DNS then raises the phone's sign-in
+            // sheet with the credential form. The QR is encoded here at
+            // render time — the PSK exists nowhere at build time — and
+            // the password is printed under it for phones that cannot
+            // scan.
+            let psk_text = psk.as_str();
+            let mut temp = [0u8; join_qr::BUFFER_LEN];
+            let mut out = [0u8; join_qr::BUFFER_LEN];
+            // 140 + 33 modules * 5 px + the 20 px quiet zone ends at
+            // y 325; the first caption baseline at 352 keeps its
+            // ascenders out of the cleared band.
+            if let Some(qr) = join_qr::encode(psk_text, &mut temp, &mut out) {
+                draw_qr(fb, &qr, layout.heading_cx, 140, 5);
+            }
+            let mut buf = [0u8; 48];
+            let mut cursor = 0;
+            push_str(&mut buf, &mut cursor, "scan to join \u{201c}");
+            push_str(&mut buf, &mut cursor, join_qr::PORTAL_SSID);
+            push_str(&mut buf, &mut cursor, "\u{201d}");
             draw_text_centered(
                 fb,
                 literata_small(FontStyle::Regular),
-                "scan to join \u{201c}XTEINK-X4\u{201d}",
+                text_in(&buf, cursor),
                 layout.heading_cx,
-                348,
+                352,
+            );
+            let mut buf = [0u8; 32];
+            let mut cursor = 0;
+            push_str(&mut buf, &mut cursor, "password ");
+            push_str(&mut buf, &mut cursor, psk_text);
+            draw_text_centered(
+                fb,
+                literata_small(FontStyle::Regular),
+                text_in(&buf, cursor),
+                layout.heading_cx,
+                384,
             );
             draw_text_centered(
                 fb,
                 literata_small(FontStyle::Italic),
                 "then enter your wi-fi in the page that opens \u{00b7} http://192.168.4.1",
                 layout.heading_cx,
-                382,
+                416,
             );
         }
         UiSyncStatus::Serving(ip) => {
@@ -691,21 +711,23 @@ fn render_wireless(fb: &mut Framebuffer, shell: &UiShell<'_>) {
     finish_working_screen(fb, shell, layout);
 }
 
-/// Blits a packed QR matrix centered on `cx`, `scale` pixels per module,
-/// with the quiet zone cleared around it.
+/// Blits a QR symbol centered on `cx`, `scale` pixels per module, with
+/// the spec's four-module quiet zone cleared around it — regular QR
+/// needs the full four on every side (two is a Micro QR allowance), and
+/// marginal phone cameras punish anything less. Keep neighbors out of
+/// the cleared band.
 fn draw_qr(
     fb: &mut Framebuffer,
-    bits: &[u8],
-    size: usize,
-    stride: usize,
+    qr: &qrcodegen_no_heap::QrCode<'_>,
     cx: i16,
     top: i16,
     scale: i16,
 ) {
+    let size = qr.size() as usize;
     let edge = size as i16 * scale;
     let left = (cx - edge / 2).max(0) as u16;
     let top = top.max(0) as u16;
-    let quiet = (scale * 2) as u16;
+    let quiet = (scale * 4) as u16;
     fill_rect(
         fb,
         Rect {
@@ -719,7 +741,7 @@ fn draw_qr(
     let scale = scale as u16;
     for row in 0..size {
         for col in 0..size {
-            if bits[row * stride + col / 8] & (0x80 >> (col % 8)) != 0 {
+            if qr.get_module(col as i32, row as i32) {
                 fill_rect(
                     fb,
                     Rect {

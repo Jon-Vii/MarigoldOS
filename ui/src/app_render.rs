@@ -106,7 +106,7 @@ fn ui_sync_status(status: SyncStatus) -> UiSyncStatus {
         SyncStatus::Starting => UiSyncStatus::Starting,
         SyncStatus::Connecting => UiSyncStatus::Connecting,
         SyncStatus::Connected(ip) => UiSyncStatus::Connected(ip),
-        SyncStatus::PortalUp => UiSyncStatus::PortalUp,
+        SyncStatus::PortalUp(psk) => UiSyncStatus::PortalUp(psk),
         SyncStatus::Serving(ip) => UiSyncStatus::Serving(ip),
         SyncStatus::CredentialsSaved => UiSyncStatus::CredentialsSaved,
         SyncStatus::Error(error) => UiSyncStatus::Error(sync_error_label(error)),
