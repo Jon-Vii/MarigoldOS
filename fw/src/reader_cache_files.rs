@@ -320,11 +320,8 @@ where
     let Ok(xteink) = root.open_dir(CACHE_ROOT_DIR) else {
         return true;
     };
-    match xteink.delete_file_in_dir(WIFI_FILE) {
-        Ok(()) => true,
-        Err(embedded_sdmmc::Error::NotFound) => true,
-        Err(_) => false,
-    }
+    upload_store::remove_file_reclaiming_clusters(&xteink, WIFI_FILE)
+        != upload_store::RemoveStatus::Failed
 }
 
 /// Read /XTEINK/WIFI.BIN; None when missing, short, or corrupt.
@@ -672,16 +669,18 @@ pub(crate) fn empty_cache_dir<
             for spine in 0..section_count {
                 name.clear();
                 section_file_name(spine, &mut name);
-                let _ = sections.delete_file_in_dir(name.as_str());
+                let _ = upload_store::remove_file_reclaiming_clusters(&sections, name.as_str());
             }
         }
-        // The SECTIONS handle has dropped; the empty directory can go now.
+        // The SECTIONS handle has dropped; the empty directory can go now
+        // (a directory entry has no chain to reclaim).
         let _ = book.delete_file_in_dir(CACHE_SECTIONS_DIR);
-        let _ = book.delete_file_in_dir(CACHE_BOOK_FILE);
-        let _ = book.delete_file_in_dir(CACHE_TOC_FILE);
-        let _ = book.delete_file_in_dir(CACHE_COVER_FILE);
+        let _ = upload_store::remove_file_reclaiming_clusters(&book, CACHE_BOOK_FILE);
+        let _ = upload_store::remove_file_reclaiming_clusters(&book, CACHE_TOC_FILE);
+        let _ = upload_store::remove_file_reclaiming_clusters(&book, CACHE_COVER_FILE);
     }
-    // Likewise the book handle: closed by the scope above, deletable here.
+    // Likewise the book handle: closed by the scope above, deletable here
+    // (a directory entry has no chain to reclaim).
     let _ = cache.delete_file_in_dir(key);
 }
 

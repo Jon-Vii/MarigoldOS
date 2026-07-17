@@ -505,7 +505,7 @@ pub(crate) async fn upload_session(epd: &mut Epd, sd_cs: &mut Output<'static>) -
     // New books invalidate the catalog snapshot: the next boot's cache
     // load misses and runs a full scan, which is how uploads surface.
     if let Ok(xteink) = root.open_dir("XTEINK") {
-        let _ = xteink.delete_file_in_dir("CATALOG.BIN");
+        let _ = upload_store::remove_file_reclaiming_clusters(&xteink, "CATALOG.BIN");
         esp_println::println!("upload: catalog snapshot invalidated");
     }
     let books = match root.open_dir("BOOKS") {
@@ -523,9 +523,11 @@ pub(crate) async fn upload_session(epd: &mut Epd, sd_cs: &mut Output<'static>) -
         let begin = UPLOAD_BEGINS.receive().await;
         let ok = if begin.delete {
             let removed = if begin.in_books {
-                books.delete_file_in_dir(begin.name.as_str()).is_ok()
+                upload_store::remove_file_reclaiming_clusters(&books, begin.name.as_str())
+                    == upload_store::RemoveStatus::Removed
             } else {
-                root.delete_file_in_dir(begin.name.as_str()).is_ok()
+                upload_store::remove_file_reclaiming_clusters(&root, begin.name.as_str())
+                    == upload_store::RemoveStatus::Removed
             };
             if removed && begin.in_books {
                 upload_store::delete_upload_sidecars(&root, begin.name.as_str());

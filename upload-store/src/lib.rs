@@ -315,6 +315,64 @@ where
     }
 }
 
+/// The outcome of `remove_file_reclaiming_clusters`.
+///
+/// `Absent` means the file was already gone — the desired end state for
+/// callers that only care that the name is free, but *not* proof that this
+/// call deleted anything, which is why sidecar cleanup keys on `Removed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoveStatus {
+    Removed,
+    Absent,
+    Failed,
+}
+
+/// Remove a file without leaking its FAT cluster chain.
+///
+/// The pinned embedded-sdmmc delete only marks the directory entry deleted; it
+/// does not release the file's clusters. `Mode::ReadWriteTruncate` calls
+/// `truncate_cluster_chain`, which walks and frees the cluster chain and writes
+/// the zeroed directory entry before returning (embedded-sdmmc d26892f,
+/// `VolumeManager::open_file_in_dir`). A fault in that write-back leaves the
+/// entry at its original length — the chain free is not visible until the entry
+/// lands — so the file stays readable and identity-matched for the next re-upload
+/// to retire.
+///
+/// Files only: opening a directory as a file fails, which would report the
+/// delete as failed without attempting it. Directory entries hold no cluster
+/// chain of their own to leak, so they stay on `delete_file_in_dir`.
+pub fn remove_file_reclaiming_clusters<
+    D,
+    T,
+    const MAX_DIRS: usize,
+    const MAX_FILES: usize,
+    const MAX_VOLUMES: usize,
+>(
+    directory: &Directory<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
+    name: &str,
+) -> RemoveStatus
+where
+    D: embedded_sdmmc::BlockDevice,
+    T: TimeSource,
+{
+    {
+        match directory.open_file_in_dir(name, Mode::ReadWriteTruncate) {
+            Ok(file) => {
+                if file.close().is_err() {
+                    return RemoveStatus::Failed;
+                }
+            }
+            Err(embedded_sdmmc::Error::NotFound) => return RemoveStatus::Absent,
+            Err(_) => return RemoveStatus::Failed,
+        }
+    }
+    match directory.delete_file_in_dir(name) {
+        Ok(()) => RemoveStatus::Removed,
+        Err(embedded_sdmmc::Error::NotFound) => RemoveStatus::Absent,
+        Err(_) => RemoveStatus::Failed,
+    }
+}
+
 /// Remove an uploaded book's identity and label sidecars, so a deleted book's name can't
 /// mislabel a later upload that reuses the same 8.3 name.
 pub fn delete_upload_sidecars<
@@ -338,11 +396,11 @@ pub fn delete_upload_sidecars<
     };
     let mut file_name = String::<12>::new();
     label_file_name(open_name, &mut file_name);
-    let _ = labels.delete_file_in_dir(file_name.as_str());
+    let _ = remove_file_reclaiming_clusters(&labels, file_name.as_str());
 
     file_name.clear();
     identity_file_name(open_name, &mut file_name);
-    let _ = labels.delete_file_in_dir(file_name.as_str());
+    let _ = remove_file_reclaiming_clusters(&labels, file_name.as_str());
 }
 
 /// One in-flight book write. Created by [`PendingUpload::begin`]; the caller
@@ -545,7 +603,7 @@ where
         }
         for obsolete_tail in &self.obsolete_tails {
             let old = suffixed_name(self.prefix.as_str(), *obsolete_tail);
-            if books.delete_file_in_dir(old.as_str()).is_ok() {
+            if remove_file_reclaiming_clusters(books, old.as_str()) == RemoveStatus::Removed {
                 delete_upload_sidecars(root, old.as_str());
             }
         }
@@ -563,7 +621,7 @@ fn discard_target<D, T, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX
     D: embedded_sdmmc::BlockDevice,
     T: TimeSource,
 {
-    if books.delete_file_in_dir(target).is_ok() {
+    if remove_file_reclaiming_clusters(books, target) == RemoveStatus::Removed {
         delete_upload_sidecars(root, target);
     }
 }

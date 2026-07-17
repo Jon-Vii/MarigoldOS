@@ -393,7 +393,7 @@ fn probe_read_fault_aborts_before_touching_anything() {
 }
 
 #[test]
-fn retire_fault_during_commit_keeps_the_old_copy_identity_matched() {
+fn truncate_fault_during_retire_leaves_a_recoverable_entry() {
     let disk = new_card();
     let mgr = open_mgr(&disk);
     let (root, books) = open_dirs(&mgr);
@@ -402,9 +402,11 @@ fn retire_fault_during_commit_keeps_the_old_copy_identity_matched() {
     let pending = PendingUpload::begin(&root, &books, &name("BOOK0000.EPU"), 0xAAAA, "label.epub")
         .expect("begin re-upload");
     pending.write(b"new body").expect("stream");
-    // Fail the delete of the replaced copy inside commit, skipping the
-    // write that commit's internal close performs first (measured by
-    // close_write_cost below).
+    // Aim the fault at the retire truncate: skip the writes commit's internal
+    // close performs (measured by close_write_cost), so the next write — the
+    // truncate's directory-entry write-back — fails. Per the helper's docs the
+    // chain free isn't visible until that entry lands, so the old copy stays
+    // whole and identity-matched for the next re-upload to retire.
     disk.fault.fail_write_in.set(Some(close_write_cost()));
     let landed = pending.commit(&root, &books).expect("commit");
     let landed = landed.as_str().to_string();
@@ -425,6 +427,16 @@ fn retire_fault_during_commit_keeps_the_old_copy_identity_matched() {
     );
     assert_eq!(identity_of(&root, "BOOK0000.EPU"), Some(0xAAAA));
     assert_eq!(identity_of(&root, landed.as_str()), Some(0xAAAA));
+
+    // The truncate fault prevented the directory entry update, so the old
+    // copy survives at its full original length. Length 8 (not 0) is what
+    // pins the fault to the truncate's write-back: a fault on the delete
+    // instead would mean the truncate's entry had already landed, leaving length 0.
+    assert_eq!(
+        read_book(&books, "BOOK0000.EPU").len(),
+        8,
+        "the old copy must survive at full length"
+    );
 
     // The next re-upload converges back to a single copy.
     let landed = upload(&root, &books, "BOOK0000.EPU", 0xAAAA, b"third body");
@@ -613,4 +625,41 @@ fn different_identities_with_the_same_name_chain_coexist() {
     assert_eq!(book_names(&books), vec!["BOOK0000.EPU", "BOOK0001.EPU"]);
     assert_eq!(read_book(&books, "BOOK0000.EPU"), b"book a");
     assert_eq!(read_book(&books, "BOOK0001.EPU"), b"book b");
+}
+
+#[test]
+fn deleting_a_book_reclaims_its_clusters() {
+    // The pinned embedded-sdmmc delete frees the directory entry but not the
+    // cluster chain. Cycle far more data through the card than it can hold:
+    // with the chain reclaimed every cycle reuses the same space, while a leak
+    // exhausts a 16 MiB card long before the last one.
+    const BODY_BYTES: usize = 1024 * 1024;
+    const CYCLES: u64 = 24;
+
+    let disk = new_card();
+    let mgr = open_mgr(&disk);
+    let (root, books) = open_dirs(&mgr);
+    let body = vec![0xA5u8; BODY_BYTES];
+
+    for cycle in 0..CYCLES {
+        // `cycle` is used as the identity, making every loop a *different* logical book.
+        // This ensures the probe never matches and the upload reliably lands in BOOK0000
+        // after the explicit delete below, rather than exercising the re-upload path.
+        let landed = upload(&root, &books, "BOOK0000.EPU", cycle, &body);
+        assert_eq!(
+            read_book(&books, landed.as_str()).len(),
+            BODY_BYTES,
+            "cycle {cycle}: card ran out of space, so a prior delete leaked its clusters"
+        );
+
+        assert_eq!(
+            upload_store::remove_file_reclaiming_clusters(&books, landed.as_str()),
+            upload_store::RemoveStatus::Removed,
+            "cycle {cycle}: delete failed"
+        );
+        assert!(
+            book_names(&books).is_empty(),
+            "cycle {cycle}: book survived"
+        );
+    }
 }
