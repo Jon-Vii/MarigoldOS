@@ -280,20 +280,6 @@
   }
   main p + p { text-indent: 1.6em; }
   main a { color: inherit; }
-  .colophon {
-    margin: clamp(36px, 7vw, 64px) auto 0;
-    max-width: 620px;
-    width: 100%;
-    border-top: 1px solid color-mix(in srgb, var(--label) 35%, transparent);
-    padding-top: 18px;
-    font-family: var(--mono);
-    font-size: 11.5px;
-    line-height: 2;
-    color: var(--label);
-  }
-  .colophon .row { display: flex; justify-content: space-between; gap: 16px; }
-  .colophon .row span:last-child { text-align: right; }
-
   @media (max-width: 560px) {
     .hints .kbonly { display: none; }
   }
@@ -312,7 +298,6 @@
   header .name{ font-family:var(--body); font-size:17px; color:inherit; letter-spacing:.01em; display:inline-flex; align-items:center; gap:9px; }
   header .name .mk{ width:34px; height:34px; }
   /* no hairline strokes in the page chrome - but the device + its key hints keep theirs */
-  .colophon{ border-top:0; }
   .intro{ width:min(620px,100%); text-align:center; margin:clamp(18px,4vw,40px) 0 clamp(4px,2vw,14px); }
   .intro h1{ font-weight:400; font-size:clamp(30px,5vw,46px); letter-spacing:-.01em; line-height:1.04; }
   .intro .lead{ margin-top:12px; color:var(--label); font-size:clamp(16px,2.1vw,18px); }
@@ -325,7 +310,6 @@
     box-shadow:0 2px 0 var(--mari-edge), 0 12px 24px -14px rgba(180,86,16,.85); transition:.14s; }
   .flashbtn:hover{ transform:translateY(-1px); box-shadow:0 3px 0 var(--mari-edge), 0 16px 28px -14px rgba(180,86,16,.85); }
   .flashbtn .ver{ font-size:12.5px; opacity:.72; }
-  .colophon .row a{ color:var(--label); }
   .foot{ width:min(620px,100%); margin:20px auto 0; padding-top:0; font-family:var(--mono);
     font-size:11.5px; color:var(--label); text-align:center; line-height:2; }
   .foot a{ color:var(--label); text-decoration:none; }
@@ -376,6 +360,8 @@
   .ghost{ font-family:var(--body); font-size:15px; color:var(--ink); text-decoration:none; background:var(--well); border-radius:12px; padding:12px 22px; transition:.14s; }
   .ghost:hover{ color:var(--mari); background:color-mix(in srgb,var(--mari) 12%,var(--card)); }
   .ghost.lead{ color:#33220a; background:color-mix(in srgb,var(--mari) 22%,var(--card)); }
+  .release-link{ margin-left:4px; font-size:13px; color:var(--label); text-decoration:none; }
+  .release-link:hover{ color:var(--mari); }
   .flashbtn.off{ background:var(--well); color:var(--label); box-shadow:none; cursor:not-allowed; pointer-events:none; }
   .req{ font-size:12.5px; color:var(--label); margin-top:14px; line-height:1.55; }
   .devnote{ font-size:12.5px; color:var(--label); margin-top:6px; line-height:1.55; }
@@ -398,7 +384,6 @@
       color: var(--prose);
     }
   }
-  .install .rel{ margin-top:20px; font-size:13px; } .install .rel a{ color:var(--mari); text-decoration:none; }
   @media(max-width:520px){ .asset{ grid-template-columns:1fr 1fr; } .devs{ grid-template-columns:1fr; } }
 
   esp-web-install-button{ display:inline-flex; vertical-align:middle; }
@@ -483,6 +468,7 @@
       <div class="acts">
         <esp-web-install-button id="flasher" manifest="manifest-x4.json"><button slot="activate" class="flashbtn" id="flash">Flash</button><span slot="unsupported" class="ewt-note"></span><span slot="not-allowed" class="ewt-note">Web flashing needs a secure (https) connection.</span></esp-web-install-button>
         <a class="ghost" href="#" id="dl">Download .bin</a>
+        <a class="release-link" href="https://github.com/Jon-Vii/marigold-os/releases/latest">Release notes &#8599;</a>
       </div>
       <p class="req">Uses WebSerial, in Chrome or Edge on the desktop. Wake the reader to its home screen and connect it; after flashing, replug USB to boot.</p>
       <p class="devnote">Prefer the command line? Download the .bin and flash it with esptool over USB. See the <a href="https://github.com/Jon-Vii/marigold-os/blob/main/docs/FLASHING.md">docs</a>.</p>
@@ -500,16 +486,7 @@
     <a class="dl2" href="#" id="sd">Download SD image &#8595;</a>
     <p class="txt">Already running Marigold? Use <a href="https://github.com/Jon-Vii/marigold-os/releases/latest/download/FWUPDATE.BIN">FWUPDATE.BIN</a> on X4 or <a href="https://github.com/Jon-Vii/marigold-os/releases/latest/download/FWUPDX3.BIN">FWUPDX3.BIN</a> on X3 and reboot normally.</p>
   </div>
-
-  <p class="rel"><a href="https://github.com/Jon-Vii/marigold-os/releases/latest">v0.4.3 release notes &#8599;</a></p>
 </section>
-
-<div class="colophon">
-  <div class="row"><span>panel</span><span>GDEQ0426T82 · 800 × 480 · 1-bit</span></div>
-  <div class="row"><span>page turn</span><span>~473 ms measured, 421 ms panel busy</span></div>
-  <div class="row"><span>firmware</span><span>Rust · esp-hal · no_std on device</span></div>
-  <div class="row"><span>this page</span><span>same crates, wasm32 · no framework</span></div>
-</div>
 
 <footer class="foot">
   MIT · <a href="https://github.com/Jon-Vii/marigold-os">GitHub</a> · <a href="#">Docs</a>
